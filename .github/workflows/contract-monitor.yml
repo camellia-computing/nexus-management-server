@@ -1,6 +1,8 @@
 name: Cross-repository contract
 
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
   schedule:
@@ -16,7 +18,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: cross-repository-contract
+  group: cross-repository-contract-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
