@@ -165,7 +165,7 @@ If build, runtime verification or signing fails before alias creation, rerunning
 
 ## GitHub Free operating model
 
-The flow relies only on GitHub Free capabilities: Actions, GitHub App tokens, GHCR, GitHub Releases, variables/secrets and public Sigstore transparency. Protected tags, private artifact attestations and environment required reviewers are not represented as enforcement boundaries when unavailable.
+The flow relies only on capabilities available to the current public repository on GitHub Free: Actions, GitHub App tokens, GHCR, GitHub Releases, variables/secrets, repository-level branch and tag rulesets, protected environments and public Sigstore transparency. The `release` environment requires a non-self team approval and accepts only the configured release refs; the tag ruleset prevents an existing `v*` tag from being moved or deleted. If repository visibility or the hosting plan changes, releases must stop until these hosted controls are revalidated. Private artifact attestations are not treated as an available boundary.
 
 GitHub/GHCR remain trusted primary sources only when the exact tag/SHA, App-authored managed Release, OCI labels, immutable digest and Cosign workflow identity all verify. Keyless signing publishes workflow identity and digest to public transparency services even for private code; approve that disclosure or use an operated compatible Sigstore deployment.
 
@@ -177,6 +177,9 @@ Every release-capable repository must satisfy this contract:
 | Merge method | Squash merging enabled; merge commits, rebase merging and native auto-merge disabled; the Release App executes only an approved SHA-guarded merge | Verified before product gates and again before release authorization |
 | Squash metadata | Commit title is the pull-request title; commit message is blank | Verified before product gates and again before release authorization |
 | Branch lifecycle | Head branches are deleted automatically after merge | Repository policy |
+| Main branch | Pull request, exact-head code-owner approval, current required gate, linear history, successful CodeQL policy, resolved review threads, and no deletion or force push | Active repository branch ruleset |
+| Release tags | Existing `v*` tags cannot be updated or deleted; published immutable Releases additionally lock their associated tags and assets | Active repository tag ruleset plus Release immutability |
+| Release environment | Team approval with self-review prevention; only the configured `main` and `v*` release refs may deploy | GitHub environment protection |
 | Action integrity | GitHub Actions enabled; repository SHA-pinning policy enabled; every external action uses a full 40-character commit SHA and every container action uses a `sha256` digest | Repository policy plus `scripts/check-version-policy.sh` |
 | Workflow token | Default `GITHUB_TOKEN` permission is read-only; Actions cannot create or approve pull requests; each workflow declares its minimum job permissions | Repository policy plus committed workflow definitions |
 | Publication gate | The newest non-skipped focused workflow attempt succeeds for the exact final Release PR head, which has a current `write`/`admin` human approval and no active authorized change request | Workflow-enforced publication authorization |
