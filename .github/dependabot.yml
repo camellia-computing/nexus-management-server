@@ -21,6 +21,27 @@ updates:
         patterns: ["*"]
         update-types: [minor, patch]
 
+  - package-ecosystem: npm
+    directory: /admin-ui
+    schedule:
+      interval: weekly
+      day: tuesday
+      time: "09:10"
+      timezone: Asia/Singapore
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
+      semver-minor-days: 7
+      semver-patch-days: 3
+    open-pull-requests-limit: 5
+    rebase-strategy: disabled
+    commit-message:
+      prefix: "build(deps)"
+    groups:
+      admin-ui-nonbreaking:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
