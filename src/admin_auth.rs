@@ -527,11 +527,9 @@ pub struct AdminAuthService {
 
 impl AdminAuthService {
     pub fn new(application: AdminApplication, keyring: Arc<AdminKeyring>) -> AdminAuthResult<Self> {
-        let dummy_password_hash = hash_password(
-            "Camellia Nexus invalid credential sentinel 2026!",
-            &keyring,
-            keyring.active_key_id(),
-        )?;
+        let dummy_password = Zeroizing::new(random_id("invalid_admin_credential"));
+        let dummy_password_hash =
+            hash_password(dummy_password.as_str(), &keyring, keyring.active_key_id())?;
         Ok(Self {
             repository: application.repository().clone(),
             application,
