@@ -161,6 +161,7 @@ jobs:
     name: Publish
     needs: [metadata, authorize]
     runs-on: ubuntu-24.04
+    environment: release
     timeout-minutes: 45
     permissions:
       actions: read
