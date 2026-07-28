@@ -1,0 +1,12 @@
+Camellia Nexus Management Server
+Copyright (c) 2026 Camellia Computing. All rights reserved.
+
+This management service is proprietary software. Use, operation, modification,
+hosting, and redistribution require express authorization under LICENSE. Its
+third-party Rust, JavaScript, container, and operating-system components remain
+subject to their respective notices and license terms.
+
+Cargo.lock, admin-ui/pnpm-lock.yaml, and release SBOMs form the dependency
+inventory for a build. The clean imported source snapshot is identified in
+SOURCE_PROVENANCE.json; the fresh repository history does not alter third-party
+rights or obligations.

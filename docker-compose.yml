@@ -1,0 +1,181 @@
+x-common-environment: &common-environment
+  CAMELLIA_NEXUS_LICENSE_ENV: production
+  CAMELLIA_NEXUS_LOG_FORMAT: json
+  CAMELLIA_NEXUS_LOG_LEVEL: info
+  CAMELLIA_NEXUS_HTTP_LOG_LEVEL: info
+  CAMELLIA_NEXUS_HTTP_FAILURE_LOG_LEVEL: warn
+  CAMELLIA_NEXUS_DATABASE_MAX_CONNECTIONS: 8
+  CAMELLIA_NEXUS_DATABASE_ACQUIRE_TIMEOUT_SECONDS: 5
+  DATABASE_URL: postgres://camellia:${CAMELLIA_NEXUS_DATABASE_PASSWORD:?set CAMELLIA_NEXUS_DATABASE_PASSWORD}@postgres:5432/camellia_license
+
+x-container-hardening: &container-hardening
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
+x-service: &service
+  <<: *container-hardening
+  image: ${CAMELLIA_NEXUS_LICENSE_IMAGE:?set CAMELLIA_NEXUS_LICENSE_IMAGE to an immutable image digest}
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+  stop_grace_period: 30s
+  restart: unless-stopped
+
+services:
+  migrate:
+    <<: *container-hardening
+    image: ${CAMELLIA_NEXUS_LICENSE_IMAGE:?set CAMELLIA_NEXUS_LICENSE_IMAGE to an immutable image digest}
+    command: ["migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *common-environment
+    restart: "no"
+
+  management-server:
+    <<: *service
+    container_name: camellia-nexus-management-server
+    command: ["serve"]
+    environment:
+      <<: *common-environment
+      CAMELLIA_NEXUS_LICENSE_BIND: 0.0.0.0:8088
+      CAMELLIA_NEXUS_LICENSE_STORAGE: postgres
+      CAMELLIA_NEXUS_LICENSE_ISSUER: https://license.example.com
+      CAMELLIA_NEXUS_LICENSE_AUDIENCE: camellia-nexus-desktop
+      CAMELLIA_NEXUS_LICENSE_KEY_ID: entitlement-2026-00
+      CAMELLIA_NEXUS_LICENSE_PRIVATE_KEY_PEM_PATH: /run/secrets/entitlement_private_key
+      CAMELLIA_NEXUS_WORKSPACE_KEYRING_PATH: /run/secrets/workspace_keyring
+      CAMELLIA_NEXUS_WEBHOOK_KEYRING_PATH: /run/secrets/webhook_keyring
+      CAMELLIA_NEXUS_OAUTH_CLIENT_ID: camellia-nexus-desktop
+      CAMELLIA_NEXUS_OAUTH_REDIRECT_URIS: camellia-nexus://auth/callback
+      CAMELLIA_NEXUS_CLIENT_MINIMUM_VERSION: 1.0.0
+      CAMELLIA_NEXUS_CLIENT_RECOMMENDED_VERSION: 1.0.0
+      CAMELLIA_NEXUS_CLIENT_VERSION_ENFORCE_AFTER: "2030-01-01T00:00:00Z"
+      CAMELLIA_NEXUS_CORS_ALLOWED_ORIGINS: camellia-nexus://localhost
+      CAMELLIA_NEXUS_DATABASE_MIGRATE: false
+      CAMELLIA_NEXUS_TIME_MAX_FORWARD_JUMP_SECONDS: 86400
+      CAMELLIA_NEXUS_HTTP_REQUEST_TIMEOUT_SECONDS: 15
+      CAMELLIA_NEXUS_HTTP_MAX_IN_FLIGHT: 256
+      CAMELLIA_NEXUS_MAINTENANCE_INTERVAL_SECONDS: 3600
+      CAMELLIA_NEXUS_CLEANUP_BATCH_SIZE: 1000
+      CAMELLIA_NEXUS_METRICS_BIND: 0.0.0.0:9091
+      CAMELLIA_NEXUS_METRICS_ALLOW_NON_LOOPBACK: "true"
+    ports:
+      - "127.0.0.1:8088:8088"
+      - "127.0.0.1:9091:9091"
+    secrets:
+      - entitlement_private_key
+      - workspace_keyring
+      - webhook_keyring
+    healthcheck:
+      test: ["CMD", "camellia-nexus-management-server", "healthcheck", "http://127.0.0.1:8088/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+
+  admin-web:
+    <<: *service
+    command: ["admin-web"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      clamav:
+        condition: service_healthy
+    environment:
+      <<: *common-environment
+      CAMELLIA_NEXUS_ADMIN_BIND: 0.0.0.0:8090
+      CAMELLIA_NEXUS_ADMIN_PUBLIC_ORIGIN: https://console.example.com
+      CAMELLIA_NEXUS_ADMIN_REQUEST_TIMEOUT_SECONDS: 180
+      CAMELLIA_NEXUS_ADMIN_MAX_IN_FLIGHT: 64
+      CAMELLIA_NEXUS_ADMIN_KEYRING_PATH: /run/secrets/admin_keyring
+      CAMELLIA_NEXUS_ADMIN_FORWARDED_FOR_SECRET_PATH: /run/secrets/admin_proxy_secret
+      CAMELLIA_NEXUS_OBJECT_STORAGE: database
+      CAMELLIA_NEXUS_OBJECT_HARD_LIMIT_BYTES: 21474836480
+      CAMELLIA_NEXUS_OBJECT_MAX_BYTES: 67108864
+      CAMELLIA_NEXUS_EVIDENCE_SCANNER: clamav
+      CAMELLIA_NEXUS_CLAMAV_ADDRESS: clamav:3310
+      CAMELLIA_NEXUS_METRICS_BIND: 0.0.0.0:9092
+      CAMELLIA_NEXUS_METRICS_ALLOW_NON_LOOPBACK: "true"
+    ports:
+      - "127.0.0.1:8090:8090"
+      - "127.0.0.1:9092:9092"
+    secrets:
+      - admin_keyring
+      - admin_proxy_secret
+    healthcheck:
+      test: ["CMD", "camellia-nexus-management-server", "healthcheck", "http://127.0.0.1:8090/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+
+  admin-worker:
+    <<: *service
+    command: ["admin-worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      clamav:
+        condition: service_healthy
+    environment:
+      <<: *common-environment
+      CAMELLIA_NEXUS_ADMIN_KEYRING_PATH: /run/secrets/admin_keyring
+      CAMELLIA_NEXUS_OBJECT_STORAGE: database
+      CAMELLIA_NEXUS_OBJECT_HARD_LIMIT_BYTES: 21474836480
+      CAMELLIA_NEXUS_OBJECT_MAX_BYTES: 67108864
+      CAMELLIA_NEXUS_EVIDENCE_SCANNER: clamav
+      CAMELLIA_NEXUS_CLAMAV_ADDRESS: clamav:3310
+      CAMELLIA_NEXUS_METRICS_BIND: 0.0.0.0:9093
+      CAMELLIA_NEXUS_METRICS_ALLOW_NON_LOOPBACK: "true"
+    secrets:
+      - admin_keyring
+    healthcheck:
+      test: ["CMD", "camellia-nexus-management-server", "healthcheck", "http://127.0.0.1:9093/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+
+  clamav:
+    image: clamav/clamav:stable@sha256:7f5389ccaa2368c383fa80e167ccfe44348d71e685f926fce4755eed1757673a
+    volumes:
+      - clamav-data:/var/lib/clamav
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+    environment:
+      POSTGRES_DB: camellia_license
+      POSTGRES_USER: camellia
+      POSTGRES_PASSWORD: ${CAMELLIA_NEXUS_DATABASE_PASSWORD:?set CAMELLIA_NEXUS_DATABASE_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U camellia -d camellia_license"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - postgres-18-data:/var/lib/postgresql
+    restart: unless-stopped
+
+secrets:
+  entitlement_private_key:
+    file: ./secrets/entitlement-es256-private.pem
+  workspace_keyring:
+    file: ./secrets/workspace-keyring.json
+  webhook_keyring:
+    file: ./secrets/webhook-keyring.json
+  admin_keyring:
+    file: ./secrets/admin-keyring.json
+  admin_proxy_secret:
+    file: ./secrets/admin-proxy-secret
+
+volumes:
+  postgres-18-data:
+  clamav-data:

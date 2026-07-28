@@ -1,0 +1,33 @@
+# Deny by default so local credentials, backups, test fixtures, and editor files can
+# never be uploaded to a local or remote BuildKit builder by accident.
+**
+
+!.node-version
+!rust-toolchain.toml
+!Cargo.toml
+!Cargo.lock
+
+!migrations/
+!migrations/**
+!src/
+!src/**
+
+!admin-ui/
+admin-ui/**
+!admin-ui/package.json
+!admin-ui/pnpm-lock.yaml
+!admin-ui/pnpm-workspace.yaml
+!admin-ui/svelte.config.js
+!admin-ui/vite.config.ts
+!admin-ui/tsconfig.json
+!admin-ui/src/
+!admin-ui/src/**
+!admin-ui/static/
+!admin-ui/static/**
+
+# Parent-directory exclusions above must never reopen machine-local frontend output.
+admin-ui/node_modules/
+admin-ui/.svelte-kit/
+admin-ui/build/
+admin-ui/test-results/
+admin-ui/playwright-report/

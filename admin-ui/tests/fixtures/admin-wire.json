@@ -1,0 +1,221 @@
+{
+  "accounts": {
+    "items": [
+      {
+        "id": "acct_golden",
+        "state": "active",
+        "note": "Golden customer",
+        "createdAt": 1700000000,
+        "updatedAt": 1700000100,
+        "rowVersion": 7
+      }
+    ],
+    "nextCursor": "acct_next"
+  },
+  "licenses": {
+    "items": [
+      {
+        "id": "lic_golden",
+        "accountId": "acct_golden",
+        "plan": "team",
+        "planRevision": 2,
+        "status": "active",
+        "expiresAt": null,
+        "licenseEpoch": 4,
+        "purchasedSeats": 12,
+        "rowVersion": 11
+      }
+    ],
+    "nextCursor": null
+  },
+  "activationCodes": {
+    "items": [
+      {
+        "codeHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "codePrefix": "CNX1-GOLDEN",
+        "accountId": "acct_golden",
+        "licenseId": "lic_golden",
+        "status": "active",
+        "maxRedemptions": 3,
+        "redeemedCount": 1,
+        "expiresAt": 1800000000,
+        "consumedAt": null,
+        "consumedDeviceId": null,
+        "lastRedeemedAt": 1700000200,
+        "lastRedeemedDeviceId": "00000000-0000-4000-8000-000000000001",
+        "createdAt": 1700000000,
+        "updatedAt": 1700000200,
+        "note": "Golden batch",
+        "orderId": "order_golden",
+        "channel": "contract_test",
+        "issuedBy": "admin_golden",
+        "revokedReason": null,
+        "lastAdminReason": null,
+        "rowVersion": 5
+      }
+    ],
+    "nextCursor": null
+  },
+  "devices": {
+    "items": [
+      {
+        "deviceId": "00000000-0000-4000-8000-000000000001",
+        "accountId": "acct_golden",
+        "licenseId": "lic_golden",
+        "publicKeyThumbprint": "sha256:golden",
+        "platform": "windows",
+        "appVersion": "1.0.0",
+        "displayName": "Golden laptop",
+        "state": "active",
+        "pendingActivationExpiresAt": null,
+        "createdAt": 1700000000,
+        "lastSeenAt": 1700000300,
+        "rowVersion": 9
+      }
+    ],
+    "nextCursor": null
+  },
+  "auditEvents": [
+    {
+      "id": "audit_golden",
+      "eventType": "license_status_set",
+      "outcome": "succeeded",
+      "occurredAt": 1700000400,
+      "accountId": "acct_golden",
+      "licenseId": "lic_golden",
+      "deviceId": null,
+      "reasonCode": null,
+      "metadata": {
+        "actor": "admin_golden"
+      }
+    }
+  ],
+  "dashboard": {
+    "generatedAt": 1700000500,
+    "accounts": 42,
+    "activeLicenses": 31,
+    "activeDevices": 57,
+    "riskyDevices": 2,
+    "pendingPayments": 3,
+    "openInvoices": 4
+  },
+  "sessionInfo": {
+    "user": {
+      "id": "admin_golden",
+      "username": "operator",
+      "displayName": "Golden Operator",
+      "status": "active",
+      "roles": ["platform_owner"],
+      "rowVersion": 7
+    },
+    "permissions": ["system.read"],
+    "expiresAt": 1700003600,
+    "elevatedUntil": 1700000600,
+    "serverVersion": "1.0.1"
+  },
+  "systemStatus": {
+    "status": "ready",
+    "version": "1.0.1",
+    "serverUnix": 1700000500,
+    "startedAt": 1700000000,
+    "adminOrigin": "https://admin.example.test",
+    "database": "ready",
+    "timeAuthority": "ready",
+    "objectStorage": {
+      "backend": "database",
+      "objectCount": 8,
+      "storedBytes": 4096,
+      "hardLimitBytes": 1048576,
+      "usageRatio": 0.00390625
+    }
+  },
+  "teamWorkspaces": {
+    "items": [
+      {
+        "accountId": "acct_golden",
+        "licenseId": "lic_golden",
+        "purchasedSeats": 12,
+        "occupiedMembers": 5,
+        "activeMembers": 4,
+        "memberCount": 6
+      }
+    ],
+    "nextCursor": "lic_next"
+  },
+  "teamMembers": {
+    "items": [
+      {
+        "id": "member_golden",
+        "email": "owner@example.test",
+        "displayName": "Golden Owner",
+        "role": "owner",
+        "status": "active",
+        "rowVersion": 3,
+        "createdAt": 1700000000,
+        "updatedAt": 1700000400,
+        "profilePending": false
+      }
+    ],
+    "nextCursor": null
+  },
+  "teamInvitations": {
+    "items": [
+      {
+        "id": "team_invite_golden",
+        "memberId": "member_invited",
+        "email": "viewer@example.test",
+        "displayName": "Golden Viewer",
+        "role": "viewer",
+        "expiresAt": 1700604800,
+        "acceptedAt": null,
+        "revokedAt": null,
+        "createdAt": 1700000000
+      }
+    ],
+    "nextCursor": null
+  },
+  "paymentEvidence": {
+    "items": [
+      {
+        "id": "evidence_golden",
+        "objectId": "object_golden",
+        "originalName": "receipt.pdf",
+        "mediaType": "application/pdf",
+        "byteLength": 4096,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "scanStatus": "clean",
+        "createdAt": 1700000300,
+        "scannedAt": 1700000310
+      }
+    ]
+  },
+  "createAccountRequest": {
+    "id": "acct_golden",
+    "note": "Golden customer",
+    "reason": "contract fixture"
+  },
+  "createLicenseRequest": {
+    "id": "lic_golden",
+    "accountId": "acct_golden",
+    "plan": "team",
+    "status": "active",
+    "expiresAt": null,
+    "purchasedSeats": 12,
+    "reason": "contract fixture"
+  },
+  "issueActivationCodesRequest": {
+    "accountId": "acct_golden",
+    "licenseId": "lic_golden",
+    "count": 2,
+    "maxRedemptions": 3,
+    "expiresAt": "+30d",
+    "channel": "contract_test",
+    "note": "Golden batch",
+    "reason": "contract fixture"
+  },
+  "activationCodeExpireRequest": {
+    "reason": "contract ended",
+    "maxRedemptions": null,
+    "expiresAt": "1700000500"
+  }
+}

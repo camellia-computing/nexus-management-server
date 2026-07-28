@@ -1,0 +1,38 @@
+{
+  "name": "camellia-nexus-admin-ui",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "format": "prettier --write '*.config.ts' 'src/**/*.{svelte,ts,css}' 'tests/**/*.{ts,json}' 'static/**/*.js'",
+    "format:check": "prettier --check '*.config.ts' 'src/**/*.{svelte,ts,css}' 'tests/**/*.{ts,json}' 'static/**/*.js'",
+    "test:visual": "pnpm build && playwright test",
+    "test:visual:built": "playwright test",
+    "test:visual:stability": "playwright test --workers=1 --repeat-each=2 --grep 'all text sizes persist'",
+    "test:live": "playwright test --config playwright.live.config.ts"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.12.1",
+    "@playwright/test": "1.61.1",
+    "@sveltejs/adapter-static": "3.0.10",
+    "@sveltejs/kit": "2.69.2",
+    "@sveltejs/vite-plugin-svelte": "7.2.0",
+    "@types/node": "24.13.3",
+    "prettier": "3.9.5",
+    "prettier-plugin-svelte": "4.1.1",
+    "svelte": "5.56.4",
+    "svelte-check": "4.7.2",
+    "typescript": "6.0.3",
+    "vite": "8.1.4"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "5.3.0",
+    "@lucide/svelte": "1.24.0"
+  },
+  "packageManager": "pnpm@11.15.0"
+}

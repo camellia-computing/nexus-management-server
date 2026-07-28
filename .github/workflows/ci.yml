@@ -1,0 +1,513 @@
+name: CI
+
+on:
+  workflow_call:
+    inputs:
+      client-ref:
+        description: Camellia Nexus commit or ref used by the native cross-repository full test
+        required: false
+        default: main
+        type: string
+    outputs:
+      validated-sha:
+        description: Commit validated by the trusted main run
+        value: ${{ jobs.gate.outputs.validated-sha }}
+      validation-run-id:
+        description: Trusted main run that validated the commit
+        value: ${{ jobs.gate.outputs.validation-run-id }}
+    secrets:
+      CROSS_REPO_READ_APP_PRIVATE_KEY:
+        description: Optional private key for private sibling repository access
+        required: false
+  workflow_dispatch:
+    inputs:
+      client-ref:
+        description: Camellia Nexus commit or ref used by the native cross-repository full test
+        required: false
+        default: main
+        type: string
+  pull_request:
+    types: [opened, ready_for_review, reopened, synchronize]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}-draft-${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+jobs:
+  metadata:
+    name: Context
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      build-id: ${{ steps.resolve.outputs.build-id }}
+      image: ${{ steps.resolve.outputs.image }}
+      release-path: ${{ steps.resolve.outputs.release-path }}
+      release-pr-number: ${{ steps.resolve.outputs.release-pr-number }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - name: Version and path
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_BASE: ${{ github.event.pull_request.base.ref || '' }}
+          PR_HEAD: ${{ github.event.pull_request.head.ref || '' }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          PR_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_id="$(cargo pkgid --locked -p camellia-nexus-management-server)"
+          version="${package_id##*@}"
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo "Committed server version is not canonical stable SemVer: $version" >&2
+            exit 1
+          }
+          owner="$(tr '[:upper:]' '[:lower:]' <<< "$GITHUB_REPOSITORY_OWNER")"
+          image="ghcr.io/$owner/nexus-management-server"
+          build_id="$version"
+          release_path=none
+          release_pr_number=
+
+          if [[ "$GITHUB_EVENT_NAME" == pull_request &&
+                "$PR_BASE" == main &&
+                "$PR_HEAD" == release/next &&
+                "$PR_REPOSITORY" == "$GITHUB_REPOSITORY" ]]; then
+            release_path=open
+            release_pr_number="$PR_NUMBER"
+          elif [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]]; then
+            if [[ "$(git log -1 --format=%s)" =~ ^chore\(release\):\ v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              release_pr_number="$(bash scripts/manage-release.sh resolve-merged-pr "$GITHUB_SHA")"
+              release_path=merged
+            fi
+          elif [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            build_id="candidate-${GITHUB_SHA::12}"
+          fi
+
+          {
+            echo "build-id=$build_id"
+            echo "image=$image"
+            echo "release-path=$release_path"
+            echo "release-pr-number=$release_pr_number"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo '## Validation'
+            echo "- Version: \`$version\`"
+            echo "- Image: \`$image:$build_id\`"
+            echo "- Release path: \`$release_path\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release-check:
+    name: Release PR
+    needs: metadata
+    if: ${{ needs.metadata.outputs.release-path != 'none' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.metadata.outputs.release-path == 'open' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - name: git-cliff
+        run: bash scripts/install-git-cliff.sh
+      - name: Validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_LOGIN }}
+          RELEASE_PATH: ${{ needs.metadata.outputs.release-path }}
+          RELEASE_PR_NUMBER: ${{ needs.metadata.outputs.release-pr-number }}
+        run: |
+          if [[ "$RELEASE_PATH" == open ]]; then
+            bash scripts/manage-release.sh validate-pr
+          else
+            bash scripts/manage-release.sh validate-main
+          fi
+
+  quality:
+    name: Quality
+    needs: metadata
+    if: ${{ needs.metadata.outputs.release-path == 'none' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+        env:
+          POSTGRES_DB: camellia_license_test
+          POSTGRES_USER: camellia
+          POSTGRES_PASSWORD: test-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U camellia -d camellia_license_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://camellia:test-only-password@127.0.0.1:5432/camellia_license_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Workflows
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # 1.7.12
+      - name: PR title
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        shell: bash
+        run: |
+          [[ "$PR_TITLE" =~ ^(feat|fix|perf|revert|build|docs|ci|test|style|refactor|chore)(\([a-z0-9][a-z0-9._/-]*\))?!?:\ .+ ]] || {
+            echo 'PR title must use Conventional Commits syntax' >&2
+            exit 1
+          }
+      - name: Rust audit
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit --deny yanked
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: admin-ui/package.json
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: admin-ui/pnpm-lock.yaml
+      - name: Toolchains
+        shell: bash
+        run: bash scripts/report-toolchains.sh
+      - name: Version policy
+        run: |
+          bash scripts/check-version-policy.sh
+          bash scripts/test-update-toolchains.sh
+      - name: Admin UI
+        working-directory: admin-ui
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm format:check
+          pnpm check
+          pnpm build
+      - name: Admin interactions
+        working-directory: admin-ui
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          pnpm test:visual:built
+          pnpm test:visual:stability
+      - name: Frontend audit
+        working-directory: admin-ui
+        run: pnpm audit --audit-level high
+      - name: Scripts
+        run: |
+          bash scripts/test-key-generators.sh
+          bash scripts/test-systemd-deployment.sh
+          bash -n \
+            scripts/build-e2e-bundle.sh \
+            scripts/manage-release.sh \
+            scripts/provision-e2e-compose.sh \
+            scripts/test-systemd-deployment.sh \
+            scripts/test-container-runtime.sh \
+            scripts/test-manage-release.sh
+          bash scripts/test-manage-release.sh
+      - name: Rust gates
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo test --locked --all-targets --all-features
+      - name: PostgreSQL
+        run: |
+          cargo test --locked --test postgres_repository -- --ignored
+          cargo test --locked --lib -- --ignored --test-threads=1
+
+  container:
+    name: Candidate Image
+    needs: [metadata, quality]
+    if: ${{ needs.metadata.outputs.release-path == 'none' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: admin-ui/package.json
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: admin-ui/pnpm-lock.yaml
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Live Admin UI dependencies
+        working-directory: admin-ui
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec playwright install --with-deps chromium
+      - name: Build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: ${{ needs.metadata.outputs.image }}:${{ needs.metadata.outputs.build-id }}
+          build-args: |
+            VERSION=${{ needs.metadata.outputs.version }}
+            REVISION=${{ github.sha }}
+            SOURCE=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
+      - name: Verify
+        env:
+          CAMELLIA_NEXUS_RUN_ADMIN_UI_LIVE: 1
+          IMAGE: ${{ needs.metadata.outputs.image }}:${{ needs.metadata.outputs.build-id }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(docker run --rm "$IMAGE" --version)" = "camellia-nexus-management-server $VERSION"
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$IMAGE")" = "$VERSION"
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE")" = "$GITHUB_SHA"
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.source" }}' "$IMAGE")" = "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          bash scripts/test-container-runtime.sh "$IMAGE"
+
+      - name: Build Windows E2E bundle
+        env:
+          IMAGE: ${{ needs.metadata.outputs.image }}:${{ needs.metadata.outputs.build-id }}
+        run: bash scripts/build-e2e-bundle.sh "$IMAGE" "$RUNNER_TEMP/camellia-server-e2e"
+
+      - name: Upload Windows E2E bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: camellia-server-e2e-${{ github.sha }}
+          path: ${{ runner.temp }}/camellia-server-e2e
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Vulnerability scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ needs.metadata.outputs.image }}:${{ needs.metadata.outputs.build-id }}
+          version: v0.70.0
+          scanners: vuln
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          timeout: 10m0s
+
+  native-e2e:
+    name: Windows native E2E
+    needs: [metadata, container]
+    if: ${{ needs.metadata.outputs.release-path == 'none' && needs.container.result == 'success' }}
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - name: Resolve sibling authentication
+        id: sibling-auth
+        shell: pwsh
+        env:
+          APP_CLIENT_ID: ${{ vars.CROSS_REPO_READ_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.CROSS_REPO_READ_APP_PRIVATE_KEY }}
+          TRUSTED_CONTEXT: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.actor != 'dependabot[bot]' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $hasClientId = -not [string]::IsNullOrWhiteSpace($env:APP_CLIENT_ID)
+          $hasPrivateKey = -not [string]::IsNullOrWhiteSpace($env:APP_PRIVATE_KEY)
+          if ($env:TRUSTED_CONTEXT -ne 'true') {
+            $mode = 'public'
+          } elseif ($hasClientId -and $hasPrivateKey) {
+            $mode = 'app'
+          } elseif (-not $hasClientId -and -not $hasPrivateKey) {
+            $mode = 'public'
+          } else {
+            Write-Output '::error title=Cross-repository authentication misconfigured::CROSS_REPO_READ_APP_CLIENT_ID and CROSS_REPO_READ_APP_PRIVATE_KEY must be configured together.'
+            exit 1
+          }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "mode=$mode" -Encoding utf8
+      - name: Verify public desktop repository
+        if: ${{ steps.sibling-auth.outputs.mode == 'public' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPOSITORY: ${{ github.repository_owner }}/nexus
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{
+            Accept = 'application/vnd.github+json'
+            Authorization = "Bearer $env:GH_TOKEN"
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          try {
+            $repository = Invoke-RestMethod -Uri "$env:GITHUB_API_URL/repos/$env:TARGET_REPOSITORY" -Headers $headers
+          } catch {
+            Write-Output "::error title=Private sibling requires cross-repository App::Cannot read $env:TARGET_REPOSITORY as a public repository. Configure the cross-repository read App for this repository owner."
+            exit 1
+          }
+          if ($repository.private -or
+              -not [string]::Equals($repository.full_name, $env:TARGET_REPOSITORY, [StringComparison]::OrdinalIgnoreCase)) {
+            Write-Output "::error title=Sibling repository verification failed::$env:TARGET_REPOSITORY is private or resolved to an unexpected repository."
+            exit 1
+          }
+      - name: Cross-repository read token
+        if: ${{ steps.sibling-auth.outputs.mode == 'app' }}
+        id: sibling-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CROSS_REPO_READ_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CROSS_REPO_READ_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: nexus
+          permission-contents: read
+          permission-metadata: read
+      - name: Checkout desktop
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ github.repository_owner }}/nexus
+          ref: ${{ inputs.client-ref || 'main' }}
+          path: client
+          token: ${{ steps.sibling-token.outputs.token || github.token }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: client/ui/package.json
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: client/.node-version
+          cache: pnpm
+          cache-dependency-path: client/ui/pnpm-lock.yaml
+      - name: Rust toolchain
+        working-directory: client
+        run: rustup toolchain install --no-self-update
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: server-windows-native-e2e
+          workspaces: client -> target
+      - name: Download current server bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: camellia-server-e2e-${{ github.sha }}
+          path: ${{ runner.temp }}/camellia-server-e2e
+      - name: Native client/server scenarios
+        working-directory: client
+        shell: pwsh
+        run: >-
+          ./scripts/e2e-native.ps1
+          -Provider WslBundle
+          -BundlePath "$env:RUNNER_TEMP/camellia-server-e2e"
+          -Suite full
+          -OutputDirectory "$env:RUNNER_TEMP/camellia-native-e2e"
+      - name: Upload native diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: server-native-e2e-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/camellia-native-e2e
+          if-no-files-found: warn
+          retention-days: 7
+
+  gate:
+    name: Gate
+    if: ${{ always() && !cancelled() && needs.metadata.result != 'skipped' }}
+    needs: [metadata, release-check, quality, container, native-e2e]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      validated-sha: ${{ steps.results.outputs.validated-sha }}
+      validation-run-id: ${{ steps.results.outputs.validation-run-id }}
+    steps:
+      - name: Results
+        id: results
+        env:
+          CONTAINER_RESULT: ${{ needs.container.result }}
+          METADATA_RESULT: ${{ needs.metadata.result }}
+          NATIVE_E2E_RESULT: ${{ needs.native-e2e.result }}
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          RELEASE_PATH: ${{ needs.metadata.outputs.release-path }}
+          RELEASE_RESULT: ${{ needs.release-check.result }}
+        run: |
+          set -euo pipefail
+
+          failures=0
+          {
+            echo '## Gate results'
+            echo
+            echo '| Job | Result | Expected |'
+            echo '| --- | --- | --- |'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          check_result() {
+            local job="$1"
+            local actual="$2"
+            local expected="$3"
+
+            printf "| \`%s\` | \`%s\` | \`%s\` |\n" \
+              "$job" "$actual" "$expected" >> "$GITHUB_STEP_SUMMARY"
+            if [[ "$actual" != "$expected" ]]; then
+              printf '::error title=Gate rejected::%s returned %s; expected %s\n' \
+                "$job" "$actual" "$expected"
+              failures=$((failures + 1))
+            fi
+          }
+
+          check_result Context "$METADATA_RESULT" success
+          if [[ "$METADATA_RESULT" != success ]]; then
+            check_result 'Release PR' "$RELEASE_RESULT" skipped
+            check_result Quality "$QUALITY_RESULT" skipped
+            check_result 'Candidate Image' "$CONTAINER_RESULT" skipped
+            check_result 'Windows native E2E' "$NATIVE_E2E_RESULT" skipped
+          else
+            case "$RELEASE_PATH" in
+              open|merged)
+                check_result 'Release PR' "$RELEASE_RESULT" success
+                check_result Quality "$QUALITY_RESULT" skipped
+                check_result 'Candidate Image' "$CONTAINER_RESULT" skipped
+                check_result 'Windows native E2E' "$NATIVE_E2E_RESULT" skipped
+                ;;
+              none)
+                check_result 'Release PR' "$RELEASE_RESULT" skipped
+                check_result Quality "$QUALITY_RESULT" success
+                check_result 'Candidate Image' "$CONTAINER_RESULT" success
+                check_result 'Windows native E2E' "$NATIVE_E2E_RESULT" success
+                ;;
+              *)
+                printf "| \`Release path\` | \`%s\` | \`none\`, \`open\`, or \`merged\` |\n" \
+                  "$RELEASE_PATH" >> "$GITHUB_STEP_SUMMARY"
+                printf '::error title=Gate rejected::Invalid release path: %s\n' "$RELEASE_PATH"
+                failures=$((failures + 1))
+                ;;
+            esac
+          fi
+
+          if ((failures > 0)); then
+            printf 'Gate rejected %d unexpected result(s).\n' "$failures" >&2
+            exit 1
+          fi
+
+          {
+            echo "validated-sha=$GITHUB_SHA"
+            echo "validation-run-id=$GITHUB_RUN_ID"
+          } >> "$GITHUB_OUTPUT"

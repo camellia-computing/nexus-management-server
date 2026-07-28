@@ -1,0 +1,52 @@
+[package]
+name = "camellia-nexus-management-server"
+version = "0.1.0"
+edition = "2024"
+license = "LicenseRef-Camellia-Proprietary-1.0"
+authors = ["Camellia Computing"]
+description = "Server-authoritative licensing and administration service for Camellia Nexus"
+rust-version = "1.97"
+publish = false
+
+[dependencies]
+async-trait = "0.1.89"
+argon2 = "0.5.3"
+async-stream = "0.3.6"
+axum = { version = "0.8.9", features = ["multipart"] }
+base64 = "0.22.1"
+bytes = "1.11.1"
+chacha20poly1305 = "0.11.0"
+futures-util = "0.3.31"
+hkdf = "0.13.0"
+hmac = "0.13.0"
+httpdate = "1.0.3"
+jsonwebtoken = { version = "10.4.0", default-features = false, features = ["use_pem"] }
+mime_guess = "2.0.5"
+# TODO(deps): Once object_store 0.14.1 is published, replace the line below with:
+# object_store = { version = "0.14.1", features = ["aws"] }
+object_store = { version = "0.14.0", git = "https://github.com/apache/arrow-rs-object-store.git", rev = "fd44ebb9c1158660795ec22d7b11acf31c3fe113", features = ["aws"] }
+p256 = { version = "0.14.0", features = ["ecdsa", "pem", "pkcs8"] }
+rand = "0.10.2"
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+semver = "1.0.27"
+sha2 = "0.11.0"
+sha1 = "0.11.0"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-native-roots", "postgres", "json", "migrate", "macros", "rust_decimal"] }
+subtle = "2.6.1"
+thiserror = "2.0.18"
+time = { version = "0.3.53", features = ["formatting", "macros", "parsing"] }
+tokio = { version = "1.52.3", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tower = { version = "0.5.3", features = ["limit", "load-shed", "timeout", "util"] }
+tower-http = { version = "0.7.0", features = ["cors", "fs", "request-id", "trace"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt", "json"] }
+url = "2.5.7"
+uuid = { version = "1.23.4", features = ["v4"] }
+zeroize = "1.9.0"
+rust_decimal = { version = "1.40.0", features = ["serde-with-str"] }
+zstd = "0.13.3"
+
+[dev-dependencies]
+http-body-util = "0.1.3"

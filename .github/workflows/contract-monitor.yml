@@ -1,0 +1,97 @@
+name: Cross-repository contract
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      sibling_ref:
+        description: Desktop Git ref to validate with the selected license-service ref
+        required: false
+        default: main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cross-repository-contract
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: Public API
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: License-service repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Resolve sibling authentication
+        id: sibling-auth
+        shell: bash
+        env:
+          APP_CLIENT_ID: ${{ vars.CROSS_REPO_READ_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.CROSS_REPO_READ_APP_PRIVATE_KEY }}
+          TRUSTED_CONTEXT: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.actor != 'dependabot[bot]' }}
+        run: |
+          set -euo pipefail
+          if [[ "$TRUSTED_CONTEXT" != true ]]; then
+            mode=public
+          elif [[ -n "$APP_CLIENT_ID" && -n "$APP_PRIVATE_KEY" ]]; then
+            mode=app
+          elif [[ -z "$APP_CLIENT_ID" && -z "$APP_PRIVATE_KEY" ]]; then
+            mode=public
+          else
+            echo '::error title=Cross-repository authentication misconfigured::CROSS_REPO_READ_APP_CLIENT_ID and CROSS_REPO_READ_APP_PRIVATE_KEY must be configured together.'
+            exit 1
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+      - name: Verify public desktop repository
+        if: ${{ steps.sibling-auth.outputs.mode == 'public' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPOSITORY: ${{ github.repository_owner }}/nexus
+        run: |
+          set -euo pipefail
+          repository_json="$(gh api "repos/$TARGET_REPOSITORY")" || {
+            echo "::error title=Private sibling requires cross-repository App::Cannot read $TARGET_REPOSITORY as a public repository. Configure the cross-repository read App for this repository owner."
+            exit 1
+          }
+          jq -e --arg target "$TARGET_REPOSITORY" '
+            .private == false and
+            ((.full_name | ascii_downcase) == ($target | ascii_downcase))
+          ' <<< "$repository_json" >/dev/null || {
+            echo "::error title=Sibling repository verification failed::$TARGET_REPOSITORY is private or resolved to an unexpected repository."
+            exit 1
+          }
+      - name: Cross-repository read token
+        if: ${{ steps.sibling-auth.outputs.mode == 'app' }}
+        id: sibling-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CROSS_REPO_READ_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CROSS_REPO_READ_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: nexus
+          permission-contents: read
+          permission-metadata: read
+      - name: Desktop repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ github.repository_owner }}/nexus
+          ref: ${{ inputs.sibling_ref || 'main' }}
+          path: _contract_sibling
+          token: ${{ steps.sibling-token.outputs.token || github.token }}
+          persist-credentials: false
+      - name: Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+      - name: Verify public wire and semantic contract
+        run: |
+          node scripts/check-cross-repo-contract.mjs _contract_sibling
+          node scripts/test-cross-repo-contract.mjs _contract_sibling

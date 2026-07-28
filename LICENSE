@@ -1,0 +1,70 @@
++CAMELLIA PROPRIETARY SOFTWARE LICENSE
+Version 1.0 — 28 July 2026
+
+Copyright (c) 2026 Camellia Computing. All rights reserved.
+
+1. Ownership
+The software, source code, object code, documentation, designs, and related
+materials distributed with this license (the "Software") are proprietary to
+Camellia Computing and its licensors. Possession of a copy or access to source
+code does not transfer ownership or grant any rights except those stated in a
+separate written authorization issued by Camellia Computing.
+
+2. Authorized use
+You may install, execute, and make the number of copies of the Software
+expressly permitted by a valid written agreement, order, evaluation approval,
+or product authorization issued by Camellia Computing. Use must remain within
+the authorized users, devices, organizations, purposes, features, territory,
+and term. An authorization token is evidence of technical entitlement only and
+does not enlarge the legal authorization.
+
+3. Restrictions
+Unless a separate written agreement expressly permits it, you may not copy,
+modify, adapt, translate, publish, distribute, disclose, sublicense, rent,
+lease, sell, host for third parties, create derivative works from, or otherwise
+make the Software available to another person. You may not circumvent or
+interfere with authorization, integrity, metering, update, or security controls.
+You may not reverse engineer, decompile, or disassemble the Software except to
+the limited extent such a restriction is prohibited by applicable law.
+
+4. Internal safeguards
+Authorized copies, credentials, private signing material, recovery material,
+and source code must be protected against unauthorized access and disclosure.
+You must promptly stop unauthorized use and notify Camellia Computing of a
+suspected compromise affecting the Software.
+
+5. Third-party materials
+Third-party components remain governed by their respective license terms and
+notices. This license applies only to Camellia Computing's rights in the
+Software and does not restrict rights independently granted by those third
+parties.
+
+6. No trademark license
+No right to use Camellia Computing names, marks, product names, logos, or trade
+dress is granted except to identify an authorized copy as required for ordinary
+use.
+
+7. Termination
+The authorization terminates automatically when its stated term expires or
+when these terms are materially breached. Upon termination, you must stop using
+the Software and delete all copies under your control, except copies that law
+requires you to retain.
+
+8. Disclaimer and limitation
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE SOFTWARE IS PROVIDED "AS IS" AND
+WITHOUT WARRANTIES NOT EXPRESSLY SET OUT IN A SEPARATE WRITTEN AGREEMENT.
+CAMELLIA COMPUTING DISCLAIMS IMPLIED WARRANTIES, INCLUDING MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT. TO THE MAXIMUM
+EXTENT PERMITTED BY LAW, CAMELLIA COMPUTING WILL NOT BE LIABLE FOR INDIRECT,
+INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES, OR FOR LOSS OF DATA,
+REVENUE, PROFITS, OR BUSINESS, ARISING FROM USE OF OR INABILITY TO USE THE
+SOFTWARE.
+
+9. Separate agreements
+A written agreement signed or otherwise formally accepted by Camellia
+Computing may replace or supplement these terms. If it conflicts with this
+license, that agreement controls for its authorized scope.
+
+No rights are granted by implication, estoppel, publication of source code, or
+otherwise. For authorization inquiries, contact the channel identified by
+Camellia Computing.

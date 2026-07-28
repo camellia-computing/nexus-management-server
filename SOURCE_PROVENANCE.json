@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "component": "camellia-nexus-management-server",
+  "source_repository": "https://github.com/camellia-nexus/CamelliaNexus-license-server",
+  "source_commit": "af7b1df88382fb1530a15f228857fb57bb34e13c",
+  "normalized_repository": "https://github.com/camellia-computing/nexus-management-server",
+  "history_policy": "fresh-root-snapshot",
+  "database_compatibility_policy": "single-prelaunch-baseline",
+  "license": "LicenseRef-Camellia-Proprietary-1.0"
+}

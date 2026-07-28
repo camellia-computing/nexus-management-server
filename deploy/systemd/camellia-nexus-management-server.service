@@ -1,0 +1,37 @@
+[Unit]
+Description=Camellia Nexus Public License Service
+Documentation=https://github.com/camellia-computing/nexus-management-server
+After=network-online.target camellia-nexus-management-migrate.service
+Wants=network-online.target
+Requires=camellia-nexus-management-migrate.service
+
+[Service]
+Type=simple
+User=camellia-license
+Group=camellia-license
+UMask=0077
+EnvironmentFile=/etc/camellia-nexus/management-common.env
+EnvironmentFile=/etc/camellia-nexus/public-api.env
+ExecStart=/usr/local/bin/camellia-nexus-management-server serve
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

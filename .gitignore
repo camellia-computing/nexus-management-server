@@ -1,0 +1,10 @@
+/target/
+/.local/
+/.env
+/.idea/
+/.vscode/
+/secrets/
+*.pem
+*.key
+*.pfx
+*.p12
