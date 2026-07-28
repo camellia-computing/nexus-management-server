@@ -5,6 +5,10 @@ Camellia Nexus management-server and client versions advance independently. The 
 GitHub Container Registry and the matching GitHub Release are the primary trusted distribution surfaces. Repository owner, repository name, image namespace and OCI source URL are derived from the active GitHub context; the Dockerfile and workflows contain no fixed account or developer-local alternate remote.
 
 Actions names are repository-local and responsibility-based: `Main`, `CI`, `Merge`, `Release Manager` and `Release`. `Gate` remains the stable required check.
+Repository-local controls implement the
+[organization CI/CD baseline](https://github.com/camellia-computing/.github/blob/main/docs/CI_CD_BASELINE.md);
+the organization policy audit detects hosted-setting and required-workflow drift without replacing
+the server-specific database, administration and container gates below.
 
 ## Release flow
 
@@ -157,6 +161,15 @@ The release image name is `ghcr.io/<current-owner>/camellia-nexus-management-ser
 
 All immutable aliases must resolve to one canonical digest. A new image is first pushed by canonical digest without a formal alias. The workflow pulls that digest and verifies the executable version and OCI `version`, `revision` and `source` labels, then signs it before creating any immutable release alias. `source` must equal the current repository URL supplied by GitHub Actions.
 
+This repository publishes a Linux server container, not an end-user native or
+mobile application. It must not hold Windows PFX, macOS/iOS certificate,
+Android keystore or Linux package-signing secrets. Its release identity is the
+keyless Cosign/OIDC workflow identity bound to the immutable OCI digest and
+verified provenance. Non-secret native certificate identities for the client
+repositories remain centralized in the
+[organization signing registry](https://github.com/camellia-computing/.github/blob/main/config/signing-identities.json);
+they are deliberately not duplicated here.
+
 The runtime stage performs no package-manager or mutable mirror operation. It copies the required CA bundle and compiled assets from immutable builder inputs, runs as numeric UID/GID `10001:10001`, and uses the application binary itself for local readiness probes.
 
 An existing digest is reusable only if it already has a valid keyless signature from the exact tag workflow or the trusted `main` recovery workflow. The workflow never back-signs an unknown pre-existing digest. Publication records exactly one canonical digest in the managed Release notes before the Release becomes public. Every public rerun is bound to that recorded digest: missing aliases may be restored only after registry availability, workflow identity and signature verification, while a missing or conflicting recorded digest stops the run. A public Release can therefore never enter the image-build path. The mutable `latest` alias is updated only after the immutable digest and GitHub Release are public and only when that tag is still GitHub's current Latest Release. Rerunning a superseded tag cannot roll `latest` back. Production deployments must pin the digest rather than `latest`.
@@ -212,4 +225,4 @@ Every release-capable repository must satisfy this contract:
 
 GitHub App 身份以真实 installation token 返回的 slug 为唯一权威。工作流据此推导 bot login 与 noreply 邮箱，并强制核对仓库中配置的 Client ID、login 与私钥。发布代码不得包含 App 名称、仓库所有者、账户、来源 URL 或开发机 remote 的特例。
 
-Release PR 最终统一使用 **Squash and merge**；唯一人工操作是批准精确 head。`Merge` 在审批与最新聚焦 `Gate` 均成立后从受信任 `main` 代码复核全部发布证据，再由 Release App 以 SHA 约束自动合并。直接人工合并、App 自我审批、GitHub 原生 auto-merge 及未解除的人工变更请求均不能授权发布。工作流在发布边界再次复核审批、合并策略与不可变 Release 设置。正式 tag 构建/恢复一个不可变 digest，验证运行时与动态 OCI 来源标签，仅对新建 digest 签名，发布不可变 GitHub Release 后才更新 `latest`，最后回读 Release、全部别名与 Cosign 签名。既有受管标签的人工恢复始终从 `main` 的 `Release` 工作流输入原标签，当前工作流提交仅作为控制面，实际镜像来源仍固定为原标签 SHA。生产部署始终固定 digest。
+Release PR 最终统一使用 **Squash and merge**；唯一人工操作是批准精确 head。`Merge` 在审批与最新聚焦 `Gate` 均成立后从受信任 `main` 代码复核全部发布证据，再由 Release App 以 SHA 约束自动合并。直接人工合并、App 自我审批、GitHub 原生 auto-merge 及未解除的人工变更请求均不能授权发布。工作流在发布边界再次复核审批、合并策略与不可变 Release 设置。该仓库只发布 Linux 服务端容器，不保存 Windows/macOS/iOS/Android 原生签名秘密；其发布身份是绑定不可变 OCI digest 的无密钥 Cosign/OIDC 工作流身份。正式 tag 构建/恢复一个不可变 digest，验证运行时与动态 OCI 来源标签，仅对新建 digest 签名，发布不可变 GitHub Release 后才更新 `latest`，最后回读 Release、全部别名与 Cosign 签名。既有受管标签的人工恢复始终从 `main` 的 `Release` 工作流输入原标签，当前工作流提交仅作为控制面，实际镜像来源仍固定为原标签 SHA。生产部署始终固定 digest。

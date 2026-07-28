@@ -66,7 +66,7 @@ CAMELLIA_NEXUS_CLEANUP_BATCH_SIZE=1000
 ghcr.io/<owner>/nexus-management-server
 ```
 
-服务端与客户端分别维护独立的版本序列。服务端只发布规范的稳定语义化版本，并在不可变 digest、签名和公开 Release 验证后更新 `latest`；发布 tag 和带版本号的镜像 tag 不得覆盖。完整流程见 [发布规范](docs/releasing.md)。
+服务端与客户端分别维护独立的版本序列。服务端只发布规范的稳定语义化版本，并在不可变 digest、签名和公开 Release 验证后更新 `latest`；发布 tag 和带版本号的镜像 tag 不得覆盖。该仓库只使用绑定 OCI digest 的无密钥 Cosign/OIDC 身份，不保存桌面或移动端证书/密钥。完整流程见 [发布规范](docs/releasing.md)，跨仓库控制遵循组织级 [CI/CD 基线](https://github.com/camellia-computing/.github/blob/main/docs/CI_CD_BASELINE.md)。
 
 容器部署要点：
 
@@ -545,7 +545,7 @@ Image name:
 ghcr.io/<owner>/nexus-management-server
 ```
 
-Server and client versions advance independently. The server publishes canonical stable Semantic Versions only and updates `latest` after the immutable digest, signature and public Release verify. Release tags and versioned image tags must never be replaced. See the [release policy](docs/releasing.md) for the complete procedure.
+Server and client versions advance independently. The server publishes canonical stable Semantic Versions only and updates `latest` after the immutable digest, signature and public Release verify. Release tags and versioned image tags must never be replaced. This repository uses only the keyless Cosign/OIDC identity bound to its OCI digest and does not store desktop or mobile signing credentials. See the [release policy](docs/releasing.md) and organization [CI/CD baseline](https://github.com/camellia-computing/.github/blob/main/docs/CI_CD_BASELINE.md) for the complete procedure.
 
 Container deployment notes:
 
