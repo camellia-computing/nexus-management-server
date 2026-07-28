@@ -86,6 +86,12 @@ The manager initializes a new proposal as a draft PR, writes its lifecycle label
 | Manual `CI` | Complete quality plus a local candidate image tagged by commit | GHCR push and release authority |
 | Managed release tag | Managed Release/PR proof, formal image build/recovery, runtime/OCI checks, Cosign and readback | Product test suites already bound to the release parent |
 
+Until the release GitHub App is deliberately configured, an ordinary `main`
+push still runs the complete source-validation workflow but skips the policy
+and release-manager jobs. Setting either release App variable activates strict
+configuration checks; publication remains fail-closed until both variables and
+the private-key secret are valid.
+
 `Candidate Image` remains after `Quality`: it validates the final Dockerfile, compiled runtime,
 version, revision and dynamically derived source label. Against isolated PostgreSQL it also applies
 migrations; starts the public, Admin, and worker roles; completes real administrator enrollment,

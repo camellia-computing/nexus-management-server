@@ -16,6 +16,7 @@ concurrency:
 jobs:
   policy:
     name: Policy
+    if: ${{ vars.RELEASE_APP_CLIENT_ID != '' || vars.RELEASE_APP_LOGIN != '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -42,14 +43,19 @@ jobs:
 
   validation:
     name: Validate
-    needs: policy
     uses: ./.github/workflows/ci.yml
     secrets:
       CROSS_REPO_READ_APP_PRIVATE_KEY: ${{ secrets.CROSS_REPO_READ_APP_PRIVATE_KEY }}
 
   release:
     name: Release Manager
-    needs: validation
+    if: >-
+      always() &&
+      vars.RELEASE_APP_CLIENT_ID != '' &&
+      vars.RELEASE_APP_LOGIN != '' &&
+      needs.policy.result == 'success' &&
+      needs.validation.result == 'success'
+    needs: [policy, validation]
     uses: ./.github/workflows/release-manager.yml
     with:
       validation-run-id: ${{ needs.validation.outputs.validation-run-id }}
