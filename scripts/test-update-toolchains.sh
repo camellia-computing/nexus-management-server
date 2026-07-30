@@ -14,7 +14,8 @@ mkdir -p "$fixture/admin-ui" "$fixture/scripts" "$fixture/docs" "$fixture/.githu
 cp "$repository_root/.dockerignore" "$repository_root/.node-version" \
   "$repository_root/Cargo.toml" "$repository_root/rust-toolchain.toml" \
   "$repository_root/Dockerfile" "$repository_root/docker-compose.yml" "$fixture/"
-cp "$repository_root/admin-ui/package.json" "$fixture/admin-ui/"
+cp "$repository_root/admin-ui/package.json" "$repository_root/admin-ui/pnpm-workspace.yaml" \
+  "$fixture/admin-ui/"
 cp "$repository_root/scripts/check-version-policy.sh" "$repository_root/scripts/update-toolchains.sh" "$fixture/scripts/"
 cp "$repository_root/scripts/build-e2e-bundle.sh" "$repository_root/scripts/provision-e2e-compose.sh" "$fixture/scripts/"
 cp "$repository_root/docs/dependency-management.md" "$fixture/docs/"
@@ -74,5 +75,29 @@ for ecosystem in github-actions docker docker-compose; do
     fail "unsupported $ecosystem tiered cooldown was accepted"
   fi
 done
+
+git -C "$fixture" reset -q --hard HEAD
+sed -i "/'@napi-rs\\/wasm-runtime': 1.1.6/d" "$fixture/admin-ui/pnpm-workspace.yaml"
+if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
+  fail 'the unsupported Rolldown WASI peer graph was accepted'
+fi
+
+git -C "$fixture" reset -q --hard HEAD
+sed -i '/pnpm peers check/d' "$fixture/.github/workflows/ci.yml"
+if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
+  fail 'the missing Admin UI peer dependency gate was accepted'
+fi
+
+git -C "$fixture" reset -q --hard HEAD
+sed -i '/uses: astral-sh\/setup-uv@/d' "$fixture/.github/workflows/ci.yml"
+if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
+  fail 'the missing workflow security runtime was accepted'
+fi
+
+git -C "$fixture" reset -q --hard HEAD
+sed -i 's/zizmor==1.28.0/zizmor==1.27.0/' "$fixture/.github/workflows/ci.yml"
+if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
+  fail 'an unreviewed workflow security scanner version was accepted'
+fi
 
 printf '%s\n' 'Toolchain updater tests passed.'

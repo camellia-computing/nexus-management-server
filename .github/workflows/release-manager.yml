@@ -16,7 +16,7 @@ on:
     types: [release-request]
 
 permissions:
-  actions: read
+  actions: read # Reconcile only the exact validation run supplied by trusted main.
   contents: read
 
 concurrency:

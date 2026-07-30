@@ -43,11 +43,10 @@ addresses, customer data, credentials, or machine-local procedures here.
 - Top-level and nested CLI help must remain available before environment, logging, keyring, or
   database initialization. Every runtime role and every declared Admin operation has authoritative
   bilingual usage, constraints, options, and examples derived from current handlers.
-- `migrations/`: SQLx schema history starting from the normalized `0001_prelaunch_baseline`, followed
-  by Team device-binding integrity/removal idempotency, encrypted public-Team-operation replay, and
-  indexed Admin audit-listing migrations. It covers licensing, trusted time, billing, Team,
-  administrator identity/jobs/storage, governance, cloud workspace, and Webhooks. Update this
-  summary when adding a migration.
+- `migrations/`: the normalized SQLx `0001_prelaunch_baseline` for this unreleased service. It covers
+  licensing, trusted time, billing, Team, administrator identity/jobs/storage, governance, cloud
+  workspace, and Webhooks. Once a release has deployed the baseline, every schema change must use a
+  new immutable incrementing migration.
 - `admin-ui`: SvelteKit static administration console with typed API contracts, localization,
   accessibility utilities, unit/static checks, deterministic Playwright tests, and a live final-image
   browser suite.

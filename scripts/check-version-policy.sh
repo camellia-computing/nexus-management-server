@@ -23,6 +23,8 @@ jq -e '
   | to_entries
   | all(.value | test("^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"))
 ' admin-ui/package.json >/dev/null || fail 'direct JavaScript dependencies must use exact versions'
+grep -Fxq "  '@napi-rs/wasm-runtime': 1.1.6" admin-ui/pnpm-workspace.yaml ||
+  fail 'the Rolldown WASI fallback must use the stable emnapi-compatible runtime'
 
 rust_toolchain="$(sed -nE 's/^channel = "([^"]+)"/\1/p' rust-toolchain.toml)"
 rust_version="$(sed -nE 's/^rust-version = "([^"]+)"/\1/p' Cargo.toml | head -n 1)"
@@ -111,12 +113,21 @@ if grep -q 'RELEASE_APP_' .github/workflows/contract-monitor.yml ||
   grep -q 'RELEASE_APP_' <<< "$native_e2e_job"; then
   fail 'cross-repository validation must not reuse the Release App'
 fi
+require_workflow_text .github/workflows/ci.yml 'uses: astral-sh/setup-uv@' \
+  'CI does not install the pinned workflow security runtime'
+require_workflow_text .github/workflows/ci.yml 'version: 0.11.29' \
+  'CI does not select the reviewed exact uv release'
+require_workflow_text .github/workflows/ci.yml \
+  'run: uvx --from zizmor==1.28.0 zizmor --strict-collection --persona=pedantic --format=github .' \
+  'CI does not block on the reviewed pedantic workflow security scan'
 
 grep -q 'rustup toolchain install --no-self-update' "${workflow_files[@]}" || fail 'workflows must install the repository Rust toolchain'
 if grep -qE 'runs-on:[[:space:]]+(ubuntu|windows|macos)-latest' "${workflow_files[@]}"; then
   fail 'hosted runner families must be explicit'
 fi
 grep -q 'pnpm install --frozen-lockfile' "${workflow_files[@]}" || fail 'CI must install the admin UI from the frozen lockfile'
+grep -Fq 'pnpm peers check' .github/workflows/ci.yml ||
+  fail 'CI must reject unsupported Admin UI peer dependency graphs'
 grep -qE 'cargo .*(--locked.*(test|clippy)|(test|clippy).*--locked)' "${workflow_files[@]}" || fail 'CI must use locked Cargo gates'
 
 while IFS= read -r reference; do
@@ -224,7 +235,7 @@ done
 
 policy=docs/dependency-management.md
 [[ -f "$policy" ]] || fail 'dependency policy documentation is missing'
-for exception in 'pnpm 11' cookie object_store; do
+for exception in 'pnpm 11' cookie '@napi-rs/wasm-runtime' 'TypeScript 7' workflow_run; do
   grep -q "$exception" "$policy" || fail "dependency exception is undocumented: $exception"
 done
 

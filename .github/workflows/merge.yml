@@ -3,14 +3,14 @@ name: Merge
 on:
   pull_request_review:
     types: [submitted]
-  workflow_run:
+  workflow_run: # zizmor: ignore[dangerous-triggers] Trusted main revalidates the same-repository release branch, exact SHA, approval, and CI run before minting a scoped App token.
     workflows: [CI]
     types: [completed]
 
 permissions:
-  actions: read
+  actions: read # Bind the merge decision to the exact completed CI run.
   contents: read
-  pull-requests: read
+  pull-requests: read # Revalidate the release PR head, approval, and mergeability.
 
 concurrency:
   group: release-merge
