@@ -36,6 +36,7 @@ use crate::{
 const PREVIEW_TTL_SECONDS: i64 = 10 * 60;
 const JOB_LEASE_SECONDS: i64 = 60;
 const JOB_HEARTBEAT_SECONDS: u64 = 20;
+const WORKER_DEPENDENCY_CHECK_SECONDS: i64 = 10;
 const MAX_TARGETS: usize = 10_000;
 const MAX_ATTEMPTS: i32 = 3;
 
@@ -1216,16 +1217,22 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
         _ => Arc::new(AdminKeyring::ephemeral()),
     };
     keyring.readiness_check(&repository).await?;
-    runtime_metrics.record_readiness(true);
     let storage = ObjectStorageService::new(
         application.clone(),
-        keyring,
+        keyring.clone(),
         ObjectStorageConfig::from_env()?,
     )?;
     let scanner = EvidenceScanner::from_env(environment == Environment::Production)?;
+    scanner.readiness_check().await?;
+    runtime_metrics.record_readiness(true);
     let jobs = AdminJobService::new(application.clone());
     let worker_id = random_id("admin_worker");
     let mut next_secret_purge = 0_i64;
+    let mut next_dependency_check = application
+        .trusted_now()
+        .await?
+        .saturating_add(WORKER_DEPENDENCY_CHECK_SECONDS);
+    let mut dependencies_ready = true;
     let metrics_server = MetricsServer::from_env(
         environment,
         RuntimeRole::AdminWorker,
@@ -1251,6 +1258,7 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
                 let now = match application.trusted_now().await {
                     Ok(now) => now,
                     Err(error) => {
+                        runtime_metrics.record_readiness(false);
                         runtime_metrics.record_background_iteration(BackgroundOutcome::Error);
                         tracing::error!(%error, "admin worker cleanup skipped because trusted time is unavailable");
                         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1258,6 +1266,19 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 };
                 let mut cleanup_failed = false;
+                if now >= next_dependency_check {
+                    dependencies_ready = true;
+                    if let Err(error) = keyring.readiness_check(application.repository()).await {
+                        dependencies_ready = false;
+                        tracing::error!(%error, "admin worker keyring readiness check failed");
+                    }
+                    if let Err(error) = scanner.readiness_check().await {
+                        dependencies_ready = false;
+                        tracing::error!(%error, "admin worker malware-scanner readiness check failed");
+                    }
+                    next_dependency_check =
+                        now.saturating_add(WORKER_DEPENDENCY_CHECK_SECONDS);
+                }
                 if now >= next_secret_purge {
                     match advance_overdue_invoices(application.repository(), now).await {
                         Ok(advanced) if advanced > 0 => tracing::info!(advanced, "overdue invoices advanced by trusted-time worker"),
@@ -1293,13 +1314,20 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     next_secret_purge = now.saturating_add(60);
                 }
+                let iteration_ready = result.is_ok() && !cleanup_failed && dependencies_ready;
+                runtime_metrics.record_readiness(iteration_ready);
                 match result {
-                    Ok(_) if cleanup_failed => {
-                        runtime_metrics.record_background_iteration(BackgroundOutcome::Error);
-                    }
-                    Ok(true) => runtime_metrics.record_background_iteration(BackgroundOutcome::Success),
+                    Ok(true) => runtime_metrics.record_background_iteration(if iteration_ready {
+                        BackgroundOutcome::Success
+                    } else {
+                        BackgroundOutcome::Error
+                    }),
                     Ok(false) => {
-                        runtime_metrics.record_background_iteration(BackgroundOutcome::Idle);
+                        runtime_metrics.record_background_iteration(if iteration_ready {
+                            BackgroundOutcome::Idle
+                        } else {
+                            BackgroundOutcome::Error
+                        });
                         tokio::time::sleep(Duration::from_secs(1)).await;
                     }
                     Err(error) => {
@@ -1311,6 +1339,7 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    runtime_metrics.record_readiness(false);
     let _ = shutdown_tx.send(true);
     let _ = signal_task.await;
     if let Some(task) = metrics_task {

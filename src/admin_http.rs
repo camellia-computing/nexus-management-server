@@ -237,10 +237,11 @@ pub async fn run_admin_web(config: AdminHttpConfig) -> Result<(), Box<dyn std::e
         None => Arc::new(AdminKeyring::ephemeral()),
     };
     keyring.readiness_check(&repository).await?;
-    runtime_metrics.record_readiness(true);
     let secret_deliveries = SecretDeliveryService::new(repository.clone(), keyring.clone());
     let evidence_scanner =
         EvidenceScanner::from_env(config.environment == Environment::Production)?;
+    evidence_scanner.readiness_check().await?;
+    runtime_metrics.record_readiness(true);
     let application = AdminApplication::new(
         repository.clone(),
         time_max_forward_jump_seconds_from_env().map_err(|error| error.to_string())?,
@@ -593,6 +594,7 @@ async fn admin_readyz(State(state): State<AdminHttpState>) -> Response<Body> {
                 .readiness_check(state.application.repository())
                 .await
                 .is_ok()
+            && state.evidence_scanner.readiness_check().await.is_ok()
             && state.application.trusted_now().await.is_ok()
     })
     .await

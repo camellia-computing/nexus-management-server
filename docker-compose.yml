@@ -143,7 +143,7 @@ services:
     secrets:
       - admin_keyring
     healthcheck:
-      test: ["CMD", "camellia-nexus-management-server", "healthcheck", "http://127.0.0.1:9093/healthz"]
+      test: ["CMD", "camellia-nexus-management-server", "healthcheck", "http://127.0.0.1:9093/readyz"]
       interval: 10s
       timeout: 3s
       retries: 12

@@ -433,12 +433,13 @@ entitlement 签发材料应由部署环境统一管理，轮换策略由发布�
 
 运行与维护配置：
 
-- `GET /healthz` 是不访问外部依赖的进程存活检查；`GET /readyz` 最多等待 2 秒检查 repository 与持久时间权威，并在 PostgreSQL 不可达、连接池无法及时取得连接、必需 schema 缺失或时间前跳保护触发时返回 `503 not ready` 与 `Cache-Control: no-store`
+- `GET /healthz` 是不访问外部依赖的进程存活检查；公开/Admin `GET /readyz` 最多等待 2 秒检查 repository、必需 schema、所需密钥、Admin 恶意软件扫描器与持久时间权威，并在依赖不可用时返回 `503 not ready` 与 `Cache-Control: no-store`
 - `CAMELLIA_NEXUS_HTTP_REQUEST_TIMEOUT_SECONDS`（默认 `15`）限制业务请求总时间；`CAMELLIA_NEXUS_HTTP_MAX_IN_FLIGHT`（默认 `256`）限制进程内并发，超时返回 504，过载返回 503，并附带 `Retry-After: 1`
 - `CAMELLIA_NEXUS_ADMIN_REQUEST_TIMEOUT_SECONDS`（默认 `180`）与 `CAMELLIA_NEXUS_ADMIN_MAX_IN_FLIGHT`（默认 `64`）只限制 `admin-web` 的 `/api/v1`；健康检查和静态资源不占用该预算。超时返回机器可读的 504，过载返回 503，二者均附带 `Retry-After: 1`
 - `CAMELLIA_NEXUS_DATABASE_ACQUIRE_TIMEOUT_SECONDS`（默认 `5`）限制等待 PostgreSQL 连接的时间；`CAMELLIA_NEXUS_DATABASE_MAX_CONNECTIONS`（默认 `8`）限制连接池大小。`serve`、`admin-web` 与 `admin-worker` 对无效值或零值均直接拒绝启动，不会静默使用默认值
-- 每个生产常驻角色都必须设置 `CAMELLIA_NEXUS_METRICS_BIND`。独立运维监听器只提供 `/healthz` 与
-  Prometheus 文本 `/metrics`；默认应绑定回环地址。非回环地址还必须显式设置
+- 每个生产常驻角色都必须设置 `CAMELLIA_NEXUS_METRICS_BIND`。独立运维监听器提供 `/healthz` 与
+  Prometheus 文本 `/metrics`；Admin Worker 还提供持续反映数据库、密钥、扫描器与工作循环状态的
+  `/readyz`，其容器健康检查必须使用该端点。默认应绑定回环地址。非回环地址还必须显式设置
   `CAMELLIA_NEXUS_METRICS_ALLOW_NON_LOOPBACK=true` 并由私有防火墙/入口隔离。`serve`、`admin-web` 与
   `admin-worker` 使用不同端口；指标只含有界的角色、状态码类别与结果标签，绝不包含租户、设备、URL、
   token 或 operation ID。所有指标族使用兼容经典 Prometheus 命名规则的 `camellia_nexus_` 前缀
@@ -934,12 +935,14 @@ Logging configuration:
 
 Runtime and maintenance configuration:
 
-- `GET /healthz` is process liveness and does not touch external dependencies. `GET /readyz` waits at most two seconds for the repository and persistent-time checks, and returns `503 not ready` with `Cache-Control: no-store` when PostgreSQL is unavailable, a pool connection cannot be obtained promptly, required schema is absent, or forward-jump protection is active
+- `GET /healthz` is process liveness and does not touch external dependencies. Public/Admin `GET /readyz` waits at most two seconds for the repository, required schema, required key material, Admin malware scanner, and persistent-time checks, returning `503 not ready` with `Cache-Control: no-store` when a dependency is unavailable
 - `CAMELLIA_NEXUS_HTTP_REQUEST_TIMEOUT_SECONDS` (default `15`) bounds total business-request time. `CAMELLIA_NEXUS_HTTP_MAX_IN_FLIGHT` (default `256`) bounds per-process concurrency. Timeouts return 504; overload returns 503; both include `Retry-After: 1`
 - `CAMELLIA_NEXUS_ADMIN_REQUEST_TIMEOUT_SECONDS` (default `180`) and `CAMELLIA_NEXUS_ADMIN_MAX_IN_FLIGHT` (default `64`) apply only to `admin-web` `/api/v1`; health checks and static assets do not consume this budget. Timeout is a machine-readable 504 and overload a 503, both with `Retry-After: 1`
 - `CAMELLIA_NEXUS_DATABASE_ACQUIRE_TIMEOUT_SECONDS` (default `5`) bounds PostgreSQL pool waits, while `CAMELLIA_NEXUS_DATABASE_MAX_CONNECTIONS` (default `8`) bounds pool size. `serve`, `admin-web`, and `admin-worker` all reject invalid or zero values at startup instead of silently using defaults
-- `CAMELLIA_NEXUS_METRICS_BIND` is required for every production runtime role. It serves only `/healthz`
-  and Prometheus text at `/metrics` on a separate operations listener. Loopback is the safe default;
+- `CAMELLIA_NEXUS_METRICS_BIND` is required for every production runtime role. The separate operations
+  listener serves `/healthz` and Prometheus text at `/metrics`; the Admin Worker additionally exposes
+  `/readyz` with its continuously observed database, keyring, scanner, and iteration state, and its
+  container health check must use that endpoint. Loopback is the safe default;
   a non-loopback address also requires `CAMELLIA_NEXUS_METRICS_ALLOW_NON_LOOPBACK=true` and a private
   firewall/ingress. Use separate ports for `serve`, `admin-web`, and `admin-worker`. Metrics expose
   bounded role/status/outcome labels and never tenant, device, URL, token, or operation identifiers.

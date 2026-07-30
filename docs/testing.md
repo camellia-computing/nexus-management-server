@@ -78,6 +78,10 @@ business transaction creates neither the resource nor its operation record. Bill
 tests traverse opaque invoice cursors across equal-sized pages and search a bounded payment-claim
 page, while browser coverage exercises explicit **Load more** state.
 
+Operations-listener tests keep liveness independent from Worker readiness and drive readiness through
+unready, ready, and recovered-failure states. A bounded fake ClamAV endpoint verifies the exact
+`zPING`/`PONG` dependency probe used at startup and during continuous Worker checks.
+
 Object-storage fault-injection tests use a fake external backend to commit bytes before returning a
 failed `put`, proving that the staging metadata survives and the worker can authenticate and finalize
 the object. The same fake replaces a valid object with an oversized body and can falsify HEAD/GET

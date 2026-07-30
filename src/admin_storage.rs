@@ -93,6 +93,38 @@ impl EvidenceScanner {
         }
     }
 
+    pub async fn readiness_check(&self) -> ObjectStorageResult<()> {
+        match self {
+            Self::Disabled => Ok(()),
+            Self::ClamAv { address, timeout } => tokio::time::timeout(*timeout, async {
+                let mut stream = tokio::net::TcpStream::connect(address.as_str())
+                    .await
+                    .map_err(|_| ObjectStorageError::ScannerUnavailable)?;
+                stream
+                    .write_all(b"zPING\0")
+                    .await
+                    .map_err(|_| ObjectStorageError::ScannerUnavailable)?;
+                let mut response = Vec::with_capacity(16);
+                stream
+                    .take(64)
+                    .read_to_end(&mut response)
+                    .await
+                    .map_err(|_| ObjectStorageError::ScannerUnavailable)?;
+                if response
+                    .strip_suffix(b"\0")
+                    .or_else(|| response.strip_suffix(b"\n"))
+                    == Some(b"PONG")
+                {
+                    Ok(())
+                } else {
+                    Err(ObjectStorageError::ScannerUnavailable)
+                }
+            })
+            .await
+            .map_err(|_| ObjectStorageError::ScannerUnavailable)?,
+        }
+    }
+
     pub async fn scan(&self, content: &[u8]) -> ObjectStorageResult<()> {
         match self {
             Self::Disabled => Err(ObjectStorageError::ScannerUnavailable),
@@ -1697,6 +1729,43 @@ mod tests {
         ] {
             assert!(parse_clamav_address(value).is_err(), "accepted {value:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn clamav_readiness_requires_the_bounded_ping_protocol() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake ClamAV");
+        let address = listener.local_addr().expect("fake ClamAV address");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept readiness probe");
+            let mut command = [0_u8; 6];
+            stream
+                .read_exact(&mut command)
+                .await
+                .expect("read readiness command");
+            assert_eq!(&command, b"zPING\0");
+            stream
+                .write_all(b"PONG\0")
+                .await
+                .expect("write readiness response");
+        });
+        let scanner = EvidenceScanner::ClamAv {
+            address: address.to_string(),
+            timeout: Duration::from_secs(1),
+        };
+        scanner.readiness_check().await.expect("accept ClamAV PONG");
+        server.await.expect("join fake ClamAV");
+
+        let unavailable = EvidenceScanner::ClamAv {
+            address: address.to_string(),
+            timeout: Duration::from_millis(50),
+        };
+        assert!(matches!(
+            unavailable.readiness_check().await,
+            Err(ObjectStorageError::ScannerUnavailable)
+        ));
+        assert!(EvidenceScanner::Disabled.readiness_check().await.is_ok());
     }
 
     #[tokio::test]

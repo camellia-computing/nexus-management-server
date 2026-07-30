@@ -93,14 +93,16 @@ table access. Validate this from the deployment network before accepting a rollo
 存储表。接受发布前必须从部署网络验证该边界。
 
 Each role has a distinct operations port (`9091`, `9092`, `9093` in the examples). These ports serve
-only `/healthz` and `/metrics`; keep them loopback-bound or behind a private metrics network. Public
-and Admin product traffic retain their own listeners. The Prometheus text contract uses the
+`/healthz` and `/metrics`; the Admin Worker port also serves `/readyz`, which reflects its current
+database, keyring, malware-scanner, and iteration state. Keep the ports loopback-bound or behind a
+private metrics network. Public and Admin product traffic retain their own listeners. The Prometheus text contract uses the
 classic-compatible `camellia_nexus_` prefix and exposes these metric families:
 `process_uptime_seconds`, `http_requests_total`, `http_in_flight_requests`,
 `http_request_duration_seconds_sum`, `readiness_checks_total`, and
 `background_iterations_total`.
 
-每个角色使用独立运维端口（示例为 `9091`、`9092`、`9093`），且只提供 `/healthz` 与 `/metrics`。
+每个角色使用独立运维端口（示例为 `9091`、`9092`、`9093`），提供 `/healthz` 与 `/metrics`；
+Admin Worker 端口还提供反映当前数据库、密钥、恶意软件扫描器与工作循环状态的 `/readyz`。
 端口必须绑定回环或位于私有指标网络；公开业务与 Admin 流量继续使用各自独立监听器。Prometheus
 文本契约统一使用兼容经典命名规则的 `camellia_nexus_` 前缀，并公开以下指标族：
 `process_uptime_seconds`、`http_requests_total`、`http_in_flight_requests`、
@@ -132,12 +134,13 @@ sudo systemctl restart camellia-nexus-management-admin-web.service
 sudo systemctl restart camellia-nexus-management-admin-worker.service
 ```
 
-Accept the rollout only after public and Admin `/readyz`, all three metrics `/healthz` endpoints,
-the expected binary version, Admin authentication and one worker operation succeed. All units use a
-30-second stop timeout to cover request draining and claimed work.
+Accept the rollout only after public and Admin `/readyz`, all three operations `/healthz` endpoints,
+the Worker operations `/readyz`, the expected binary version, Admin authentication and one worker
+operation succeed. All units use a 30-second stop timeout to cover request draining and claimed work.
 
-只有公开/Admin `/readyz`、三个指标 `/healthz`、预期二进制版本、Admin 登录和一次 Worker 任务均成功
-后才能接受发布。所有 unit 均保留 30 秒退出窗口，以覆盖请求排空与已认领工作。
+只有公开/Admin `/readyz`、三个运维 `/healthz`、Worker 运维 `/readyz`、预期二进制版本、Admin
+登录和一次 Worker 任务均成功后才能接受发布。所有 unit 均保留 30 秒退出窗口，以覆盖请求排空与
+已认领工作。
 
 ## Rollback / 回滚
 

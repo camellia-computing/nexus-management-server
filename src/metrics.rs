@@ -4,7 +4,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     sync::{
         Arc,
-        atomic::{AtomicI64, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -66,6 +66,7 @@ struct MetricsInner {
     http_requests: [AtomicU64; STATUS_CLASSES.len()],
     http_duration_micros: AtomicU64,
     readiness: [AtomicU64; 2],
+    ready: AtomicBool,
     background_iterations: [AtomicU64; BACKGROUND_OUTCOMES.len()],
 }
 
@@ -84,6 +85,7 @@ impl RuntimeMetrics {
                 http_requests: std::array::from_fn(|_| AtomicU64::new(0)),
                 http_duration_micros: AtomicU64::new(0),
                 readiness: std::array::from_fn(|_| AtomicU64::new(0)),
+                ready: AtomicBool::new(false),
                 background_iterations: std::array::from_fn(|_| AtomicU64::new(0)),
             }),
         }
@@ -91,6 +93,11 @@ impl RuntimeMetrics {
 
     pub fn record_readiness(&self, ready: bool) {
         self.inner.readiness[usize::from(!ready)].fetch_add(1, Ordering::Relaxed);
+        self.inner.ready.store(ready, Ordering::Release);
+    }
+
+    fn is_ready(&self) -> bool {
+        self.inner.ready.load(Ordering::Acquire)
     }
 
     pub fn record_background_iteration(&self, outcome: BackgroundOutcome) {
@@ -279,11 +286,34 @@ pub async fn track_http_metrics(
 }
 
 fn metrics_router(metrics: RuntimeMetrics) -> Router {
-    Router::new()
+    let role = metrics.inner.role;
+    let router = Router::new()
         .route("/healthz", get(|| async { StatusCode::NO_CONTENT }))
         .route("/metrics", get(metrics_response))
-        .fallback(StatusCode::NOT_FOUND)
-        .with_state(metrics)
+        .fallback(StatusCode::NOT_FOUND);
+    let router = if role == RuntimeRole::AdminWorker {
+        router.route("/readyz", get(worker_readiness_response))
+    } else {
+        router
+    };
+    router.with_state(metrics)
+}
+
+async fn worker_readiness_response(State(metrics): State<RuntimeMetrics>) -> Response<Body> {
+    let status = if metrics.is_ready() {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    let mut response = status.into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response.headers_mut().insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    response
 }
 
 async fn metrics_response(State(metrics): State<RuntimeMetrics>) -> impl IntoResponse {
@@ -494,5 +524,50 @@ mod tests {
                 .unwrap()
                 .contains("camellia_nexus_http_requests_total")
         );
+    }
+
+    #[tokio::test]
+    async fn worker_operations_listener_separates_liveness_from_current_readiness() {
+        let metrics = RuntimeMetrics::new(RuntimeRole::AdminWorker);
+        let response = metrics_router(metrics.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        for (ready, expected) in [
+            (false, StatusCode::SERVICE_UNAVAILABLE),
+            (true, StatusCode::NO_CONTENT),
+            (false, StatusCode::SERVICE_UNAVAILABLE),
+        ] {
+            metrics.record_readiness(ready);
+            let response = metrics_router(metrics.clone())
+                .oneshot(
+                    Request::builder()
+                        .uri("/readyz")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        }
+
+        let response = metrics_router(RuntimeMetrics::new(RuntimeRole::Public))
+            .oneshot(
+                Request::builder()
+                    .uri("/readyz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }
