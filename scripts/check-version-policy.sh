@@ -225,6 +225,14 @@ bundle_postgres="$(sed -nE "s/^postgres_image='(postgres:[^']+)'$/\1/p" scripts/
 [[ -n "$compose_postgres" && "$compose_postgres" == "$workflow_postgres" &&
   "$compose_postgres" == "$bundle_postgres" ]] ||
   fail 'CI, Compose, and the Windows E2E bundle must use the same PostgreSQL digest'
+compose_clamav="$(sed -nE 's/^[[:space:]]+image:[[:space:]]+(clamav\/clamav:[^[:space:]]+).*/\1/p' docker-compose.yml)"
+runtime_clamav="$(sed -nE "s/^clamav_image='(clamav\\/clamav:[^']+)'$/\\1/p" scripts/test-container-runtime.sh)"
+[[ "$runtime_clamav" =~ ^clamav/clamav:[0-9]+\.[0-9]+\.[0-9]+@sha256:[0-9a-f]{64}$ ]] ||
+  fail 'the runtime test ClamAV image must use an exact patch tag and immutable digest'
+compose_clamav_version="$(sed -nE 's|^clamav/clamav:([0-9]+\.[0-9]+\.[0-9]+)_base@sha256:[0-9a-f]{64}$|\1|p' <<< "$compose_clamav")"
+runtime_clamav_version="$(sed -nE 's|^clamav/clamav:([0-9]+\.[0-9]+\.[0-9]+)@sha256:[0-9a-f]{64}$|\1|p' <<< "$runtime_clamav")"
+[[ -n "$compose_clamav_version" && "$compose_clamav_version" == "$runtime_clamav_version" ]] ||
+  fail 'Compose and the runtime test must use the same exact ClamAV patch'
 grep -Fq -- '- postgres-18-data:/var/lib/postgresql' docker-compose.yml ||
   fail 'PostgreSQL 18 Compose data must be mounted at /var/lib/postgresql'
 grep -Fq './deploy/postgres/init-runtime-roles.sh:/docker-entrypoint-initdb.d/10-runtime-roles.sh:ro' \

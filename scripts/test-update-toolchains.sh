@@ -18,7 +18,8 @@ cp "$repository_root/.dockerignore" "$repository_root/.node-version" \
 cp "$repository_root/admin-ui/package.json" "$repository_root/admin-ui/pnpm-workspace.yaml" \
   "$fixture/admin-ui/"
 cp "$repository_root/scripts/check-version-policy.sh" "$repository_root/scripts/update-toolchains.sh" "$fixture/scripts/"
-cp "$repository_root/scripts/build-e2e-bundle.sh" "$repository_root/scripts/provision-e2e-compose.sh" "$fixture/scripts/"
+cp "$repository_root/scripts/build-e2e-bundle.sh" "$repository_root/scripts/provision-e2e-compose.sh" \
+  "$repository_root/scripts/test-container-runtime.sh" "$fixture/scripts/"
 cp "$repository_root/docs/dependency-management.md" "$fixture/docs/"
 cp "$repository_root/deploy/"*.env.example "$fixture/deploy/"
 cp "$repository_root/deploy/postgres/init-runtime-roles.sh" "$fixture/deploy/postgres/"
@@ -52,6 +53,13 @@ grep -Fq "postgres:19-alpine@$postgres_digest" "$fixture/docker-compose.yml" || 
 grep -Fq "postgres:19-alpine@$postgres_digest" "$fixture/.github/workflows/ci.yml" || fail 'CI PostgreSQL image was not updated'
 grep -Fq "postgres_image='postgres:19-alpine@$postgres_digest'" "$fixture/scripts/build-e2e-bundle.sh" ||
   fail 'Windows E2E bundle PostgreSQL image was not updated'
+
+git -C "$fixture" reset -q --hard HEAD
+sed -i -E "s|clamav_image='clamav/clamav:[0-9]+\\.[0-9]+\\.[0-9]+@|clamav_image='clamav/clamav:9.9.9@|" \
+  "$fixture/scripts/test-container-runtime.sh"
+if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
+  fail 'a runtime scanner patch that differs from Compose was accepted'
+fi
 
 git -C "$fixture" reset -q --hard HEAD
 before="$(git -C "$fixture" status --porcelain=v1)"

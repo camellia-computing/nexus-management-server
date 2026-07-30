@@ -28,6 +28,7 @@ worker="camellia-worker-$suffix"
 admin_live="camellia-admin-live-$suffix"
 secrets_volume_created=0
 postgres_image='postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15'
+clamav_image='clamav/clamav:1.4.5@sha256:6b7c8e09559250f25b0184516b0a2ae805136e57485260e16c780c9fd6e6aba9'
 
 run_live_admin_ui="${CAMELLIA_NEXUS_RUN_ADMIN_UI_LIVE:-0}"
 case "$run_live_admin_ui" in
@@ -119,7 +120,7 @@ SQL
 echo "==> Start the pinned production evidence scanner"
 docker run --detach --name "$clamav" --network "$network" --network-alias clamav \
   --platform linux/amd64 \
-  clamav/clamav:1.4.3_base@sha256:be37f82c9cccf6c2559a44b8fb537e6f11e8547b37988650b169c4540c2f298c \
+  "$clamav_image" \
   >/dev/null
 for _ in {1..90}; do
   if docker exec "$clamav" clamdscan --ping 1 >/dev/null 2>&1; then

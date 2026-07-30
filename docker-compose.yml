@@ -150,7 +150,7 @@ services:
       start_period: 15s
 
   clamav:
-    image: clamav/clamav:stable@sha256:7f5389ccaa2368c383fa80e167ccfe44348d71e685f926fce4755eed1757673a
+    image: clamav/clamav:1.4.5_base@sha256:35ec19c1e8cbee7cae8a35c3b0ac62957d99b418e6902035b89a1778c39433e7
     volumes:
       - clamav-data:/var/lib/clamav
     restart: unless-stopped
