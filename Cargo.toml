@@ -44,3 +44,4 @@ rust_decimal = { version = "1.40.0", features = ["serde-with-str"] }
 
 [dev-dependencies]
 http-body-util = "0.1.3"
+prometheus-parse = "0.2.5"

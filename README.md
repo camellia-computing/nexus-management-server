@@ -441,7 +441,7 @@ entitlement 签发材料应由部署环境统一管理，轮换策略由发布�
   Prometheus 文本 `/metrics`；默认应绑定回环地址。非回环地址还必须显式设置
   `CAMELLIA_NEXUS_METRICS_ALLOW_NON_LOOPBACK=true` 并由私有防火墙/入口隔离。`serve`、`admin-web` 与
   `admin-worker` 使用不同端口；指标只含有界的角色、状态码类别与结果标签，绝不包含租户、设备、URL、
-  token 或 operation ID
+  token 或 operation ID。所有指标族使用兼容经典 Prometheus 命名规则的 `camellia_nexus_` 前缀
 - `CAMELLIA_NEXUS_CLIENT_MINIMUM_VERSION`、`CAMELLIA_NEXUS_CLIENT_RECOMMENDED_VERSION` 与 `CAMELLIA_NEXUS_CLIENT_VERSION_ENFORCE_AFTER` 在生产环境均为必填；版本必须是规范 SemVer，执行时间必须是绝对的 RFC3339、UTC 日期/日期时间或 Unix 秒，不接受相对时长。相对时间只允许开发环境和 Admin 有效期输入，避免多副本按各自启动时刻产生不同执行边界
 - PostgreSQL 模式以 `service_time_authority` 单例保存授权时间高水位。每个安全相关请求在写入 code、session 或 entitlement 前原子推进高水位，取数据库时间、持久高水位与进程单调时间的最大安全值；因此数据库或主机时钟回拨以及服务重启都不会让已过期对象重新有效。Admin 写命令遵循同一时间权威；内存模式仅用于开发和测试，不提供跨进程持久保证
 - `CAMELLIA_NEXUS_TIME_MAX_FORWARD_JUMP_SECONDS`（默认 `86400`，即 24 小时）是数据库时间相对持久高水位允许的一次最大前跳。超过该值时服务记录结构化错误、拒绝全部依赖授权时间的操作并使 readiness 失败，且不会接受异常时间。先校正并确认 PostgreSQL UTC 时间；若前跳来自经过核验的长时间停机，可在受控维护窗口临时把该值提高到覆盖实际间隔，待一次成功 readiness 推进高水位后立即恢复默认并重启。不得直接改写时间权威表
@@ -942,7 +942,8 @@ Runtime and maintenance configuration:
   and Prometheus text at `/metrics` on a separate operations listener. Loopback is the safe default;
   a non-loopback address also requires `CAMELLIA_NEXUS_METRICS_ALLOW_NON_LOOPBACK=true` and a private
   firewall/ingress. Use separate ports for `serve`, `admin-web`, and `admin-worker`. Metrics expose
-  bounded role/status/outcome labels and never tenant, device, URL, token, or operation identifiers
+  bounded role/status/outcome labels and never tenant, device, URL, token, or operation identifiers.
+  Every metric family uses the classic-compatible `camellia_nexus_` prefix
 - `CAMELLIA_NEXUS_CLIENT_MINIMUM_VERSION`, `CAMELLIA_NEXUS_CLIENT_RECOMMENDED_VERSION`, and `CAMELLIA_NEXUS_CLIENT_VERSION_ENFORCE_AFTER` are all required in production; versions must be canonical SemVer and the enforcement time must be an absolute RFC3339 instant, UTC date/date-time, or Unix second value. Relative durations are accepted only in development and for Admin expiry inputs, preventing replicas from resolving policy boundaries from different startup times
 - PostgreSQL mode stores the licensing-time high-water mark in the `service_time_authority` singleton. Before a security-sensitive request writes a code, session or entitlement, it atomically advances that mark using the safe maximum of database time, the persisted high water and process-monotonic time. Database or host-clock rollback, including across a service restart, therefore cannot make expired objects valid again. Admin mutations use the same authority. Memory mode is development/test-only and has no cross-process persistence guarantee
 - `CAMELLIA_NEXUS_TIME_MAX_FORWARD_JUMP_SECONDS` (default `86400`, or 24 hours) is the largest single database-time advance accepted beyond the persisted high water. A larger advance is logged, all operations that depend on licensing time fail closed, readiness fails, and the suspect value is not trusted. First correct and verify PostgreSQL UTC time. If a verified long outage caused the gap, temporarily raise the limit during a controlled maintenance window, wait for one successful readiness check to advance the high water, then restore the default and restart. Never edit the time-authority table directly

@@ -122,90 +122,90 @@ impl RuntimeMetrics {
         let mut output = String::with_capacity(2_048);
         writeln!(
             output,
-            "# HELP camellia-nexus_process_uptime_seconds Process uptime in seconds."
+            "# HELP camellia_nexus_process_uptime_seconds Process uptime in seconds."
         )
         .unwrap();
-        writeln!(output, "# TYPE camellia-nexus_process_uptime_seconds gauge").unwrap();
+        writeln!(output, "# TYPE camellia_nexus_process_uptime_seconds gauge").unwrap();
         writeln!(
             output,
-            "camellia-nexus_process_uptime_seconds{{role=\"{role}\"}} {}",
+            "camellia_nexus_process_uptime_seconds{{role=\"{role}\"}} {}",
             self.inner.started_at.elapsed().as_secs()
         )
         .unwrap();
         writeln!(
             output,
-            "# HELP camellia-nexus_http_requests_total Completed HTTP requests by status class."
+            "# HELP camellia_nexus_http_requests_total Completed HTTP requests by status class."
         )
         .unwrap();
-        writeln!(output, "# TYPE camellia-nexus_http_requests_total counter").unwrap();
+        writeln!(output, "# TYPE camellia_nexus_http_requests_total counter").unwrap();
         for (index, status_class) in STATUS_CLASSES.iter().enumerate() {
             writeln!(
                 output,
-                "camellia-nexus_http_requests_total{{role=\"{role}\",status_class=\"{status_class}\"}} {}",
+                "camellia_nexus_http_requests_total{{role=\"{role}\",status_class=\"{status_class}\"}} {}",
                 self.inner.http_requests[index].load(Ordering::Relaxed)
             )
             .unwrap();
         }
         writeln!(
             output,
-            "# HELP camellia-nexus_http_in_flight_requests Current HTTP requests being processed."
+            "# HELP camellia_nexus_http_in_flight_requests Current HTTP requests being processed."
         )
         .unwrap();
         writeln!(
             output,
-            "# TYPE camellia-nexus_http_in_flight_requests gauge"
+            "# TYPE camellia_nexus_http_in_flight_requests gauge"
         )
         .unwrap();
         writeln!(
             output,
-            "camellia-nexus_http_in_flight_requests{{role=\"{role}\"}} {}",
+            "camellia_nexus_http_in_flight_requests{{role=\"{role}\"}} {}",
             self.inner.http_in_flight.load(Ordering::Relaxed)
         )
         .unwrap();
-        writeln!(output, "# HELP camellia-nexus_http_request_duration_seconds_sum Total HTTP request duration in seconds.").unwrap();
+        writeln!(output, "# HELP camellia_nexus_http_request_duration_seconds_sum Total HTTP request duration in seconds.").unwrap();
         writeln!(
             output,
-            "# TYPE camellia-nexus_http_request_duration_seconds_sum counter"
+            "# TYPE camellia_nexus_http_request_duration_seconds_sum counter"
         )
         .unwrap();
         writeln!(
             output,
-            "camellia-nexus_http_request_duration_seconds_sum{{role=\"{role}\"}} {:.6}",
+            "camellia_nexus_http_request_duration_seconds_sum{{role=\"{role}\"}} {:.6}",
             self.inner.http_duration_micros.load(Ordering::Relaxed) as f64 / 1_000_000.0
         )
         .unwrap();
         writeln!(
             output,
-            "# HELP camellia-nexus_readiness_checks_total Readiness checks by outcome."
+            "# HELP camellia_nexus_readiness_checks_total Readiness checks by outcome."
         )
         .unwrap();
         writeln!(
             output,
-            "# TYPE camellia-nexus_readiness_checks_total counter"
+            "# TYPE camellia_nexus_readiness_checks_total counter"
         )
         .unwrap();
         for (index, outcome) in ["ready", "error"].iter().enumerate() {
             writeln!(
                 output,
-                "camellia-nexus_readiness_checks_total{{role=\"{role}\",outcome=\"{outcome}\"}} {}",
+                "camellia_nexus_readiness_checks_total{{role=\"{role}\",outcome=\"{outcome}\"}} {}",
                 self.inner.readiness[index].load(Ordering::Relaxed)
             )
             .unwrap();
         }
         writeln!(
             output,
-            "# HELP camellia-nexus_background_iterations_total Background iterations by outcome."
+            "# HELP camellia_nexus_background_iterations_total Background iterations by outcome."
         )
         .unwrap();
         writeln!(
             output,
-            "# TYPE camellia-nexus_background_iterations_total counter"
+            "# TYPE camellia_nexus_background_iterations_total counter"
         )
         .unwrap();
         for (index, outcome) in BACKGROUND_OUTCOMES.iter().enumerate() {
             writeln!(
                 output,
-                "camellia-nexus_background_iterations_total{{role=\"{role}\",outcome=\"{outcome}\"}} {}",
+                "camellia_nexus_background_iterations_total{{role=\"{role}\",outcome=\"{outcome}\"}} {}",
                 self.inner.background_iterations[index].load(Ordering::Relaxed)
             )
             .unwrap();
@@ -360,10 +360,47 @@ fn status_class(status: StatusCode) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::BTreeSet,
+        io::{BufRead as _, BufReader},
+    };
+
     use super::*;
     use axum::middleware;
     use http_body_util::BodyExt as _;
+    use prometheus_parse::Scrape;
     use tower::ServiceExt as _;
+
+    fn parse_metrics(rendered: &str) -> Scrape {
+        Scrape::parse(BufReader::new(rendered.as_bytes()).lines())
+            .expect("runtime metrics must be valid Prometheus text")
+    }
+
+    #[test]
+    fn rendered_metrics_parse_as_prometheus_text() {
+        let metrics = RuntimeMetrics::new(RuntimeRole::AdminWorker);
+        let rendered = metrics.render();
+        let scrape = parse_metrics(&rendered);
+        let names = scrape
+            .samples
+            .iter()
+            .map(|sample| sample.metric.as_str())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(scrape.samples.len(), 14);
+        assert_eq!(scrape.docs.len(), 6);
+        assert_eq!(
+            names,
+            BTreeSet::from([
+                "camellia_nexus_background_iterations_total",
+                "camellia_nexus_http_in_flight_requests",
+                "camellia_nexus_http_request_duration_seconds_sum",
+                "camellia_nexus_http_requests_total",
+                "camellia_nexus_process_uptime_seconds",
+                "camellia_nexus_readiness_checks_total",
+            ])
+        );
+    }
 
     #[test]
     fn renders_bounded_prometheus_labels_and_counters() {
@@ -378,7 +415,7 @@ mod tests {
         assert!(rendered.contains("role=\"admin_worker\",outcome=\"error\"} 1"));
         assert!(rendered.contains("role=\"admin_worker\",outcome=\"success\"} 1"));
         assert!(
-            rendered.contains("camellia-nexus_http_in_flight_requests{role=\"admin_worker\"} 0")
+            rendered.contains("camellia_nexus_http_in_flight_requests{role=\"admin_worker\"} 0")
         );
         assert!(!rendered.contains("account_id"));
         assert!(!rendered.contains("device_id"));
@@ -390,7 +427,7 @@ mod tests {
         drop(metrics.track_request());
         let rendered = metrics.render();
         assert!(rendered.contains("role=\"public\",status_class=\"other\"} 1"));
-        assert!(rendered.contains("camellia-nexus_http_in_flight_requests{role=\"public\"} 0"));
+        assert!(rendered.contains("camellia_nexus_http_in_flight_requests{role=\"public\"} 0"));
     }
 
     #[test]
@@ -455,7 +492,7 @@ mod tests {
         assert!(
             String::from_utf8(body.to_vec())
                 .unwrap()
-                .contains("camellia-nexus_http_requests_total")
+                .contains("camellia_nexus_http_requests_total")
         );
     }
 }

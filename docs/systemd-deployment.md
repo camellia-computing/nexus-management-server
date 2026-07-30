@@ -94,10 +94,18 @@ table access. Validate this from the deployment network before accepting a rollo
 
 Each role has a distinct operations port (`9091`, `9092`, `9093` in the examples). These ports serve
 only `/healthz` and `/metrics`; keep them loopback-bound or behind a private metrics network. Public
-and Admin product traffic retain their own listeners.
+and Admin product traffic retain their own listeners. The Prometheus text contract uses the
+classic-compatible `camellia_nexus_` prefix and exposes these metric families:
+`process_uptime_seconds`, `http_requests_total`, `http_in_flight_requests`,
+`http_request_duration_seconds_sum`, `readiness_checks_total`, and
+`background_iterations_total`.
 
 每个角色使用独立运维端口（示例为 `9091`、`9092`、`9093`），且只提供 `/healthz` 与 `/metrics`。
-端口必须绑定回环或位于私有指标网络；公开业务与 Admin 流量继续使用各自独立监听器。
+端口必须绑定回环或位于私有指标网络；公开业务与 Admin 流量继续使用各自独立监听器。Prometheus
+文本契约统一使用兼容经典命名规则的 `camellia_nexus_` 前缀，并公开以下指标族：
+`process_uptime_seconds`、`http_requests_total`、`http_in_flight_requests`、
+`http_request_duration_seconds_sum`、`readiness_checks_total` 和
+`background_iterations_total`。
 
 ## First start and upgrade / 首次启动与升级
 
