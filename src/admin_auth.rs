@@ -330,6 +330,22 @@ struct KeyringDocument {
     keys: BTreeMap<String, String>,
 }
 
+const ADMIN_KEYRING_REFERENCES_QUERY: &str = "SELECT key_id FROM (
+         SELECT key_id FROM admin_password_credentials
+         UNION SELECT key_id FROM admin_totp_credentials
+         UNION SELECT key_id FROM admin_enrollment_states
+         UNION SELECT key_id FROM admin_secret_deliveries WHERE key_id <> ''
+         UNION SELECT key_id FROM stored_objects
+     ) AS referenced_keys
+     ORDER BY key_id";
+
+const ADMIN_WORKER_KEYRING_REFERENCES_QUERY: &str = "SELECT key_id FROM (
+         SELECT key_id FROM admin_enrollment_states
+         UNION SELECT key_id FROM admin_secret_deliveries WHERE key_id <> ''
+         UNION SELECT key_id FROM stored_objects
+     ) AS referenced_keys
+     ORDER BY key_id";
+
 impl Drop for KeyringDocument {
     fn drop(&mut self) {
         self.active_key_id.zeroize();
@@ -411,19 +427,27 @@ impl AdminKeyring {
     }
 
     pub async fn readiness_check(&self, repository: &PostgresRepository) -> AdminAuthResult<()> {
-        let referenced_key_ids = sqlx::query_scalar::<_, String>(
-            "SELECT key_id FROM (
-                 SELECT key_id FROM admin_password_credentials
-                 UNION SELECT key_id FROM admin_totp_credentials
-                 UNION SELECT key_id FROM admin_enrollment_states
-                 UNION SELECT key_id FROM admin_secret_deliveries WHERE key_id <> ''
-                 UNION SELECT key_id FROM stored_objects
-             ) AS referenced_keys
-             ORDER BY key_id",
-        )
-        .fetch_all(&repository.pool)
-        .await
-        .map_err(|_| AdminAuthError::Service(ApiError::Database))?;
+        self.readiness_check_references(repository, ADMIN_KEYRING_REFERENCES_QUERY)
+            .await
+    }
+
+    pub(crate) async fn worker_readiness_check(
+        &self,
+        repository: &PostgresRepository,
+    ) -> AdminAuthResult<()> {
+        self.readiness_check_references(repository, ADMIN_WORKER_KEYRING_REFERENCES_QUERY)
+            .await
+    }
+
+    async fn readiness_check_references(
+        &self,
+        repository: &PostgresRepository,
+        query: &'static str,
+    ) -> AdminAuthResult<()> {
+        let referenced_key_ids = sqlx::query_scalar::<_, String>(query)
+            .fetch_all(&repository.pool)
+            .await
+            .map_err(|_| AdminAuthError::Service(ApiError::Database))?;
         if referenced_key_ids
             .iter()
             .any(|key_id| !self.keys.contains_key(key_id))
@@ -2365,6 +2389,21 @@ const COMMON_PASSWORDS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_keyring_readiness_preserves_the_credential_boundary() {
+        for inaccessible in ["admin_password_credentials", "admin_totp_credentials"] {
+            assert!(!ADMIN_WORKER_KEYRING_REFERENCES_QUERY.contains(inaccessible));
+            assert!(ADMIN_KEYRING_REFERENCES_QUERY.contains(inaccessible));
+        }
+        for required in [
+            "admin_enrollment_states",
+            "admin_secret_deliveries",
+            "stored_objects",
+        ] {
+            assert!(ADMIN_WORKER_KEYRING_REFERENCES_QUERY.contains(required));
+        }
+    }
 
     #[test]
     fn admin_keyring_requires_one_strict_canonical_contract() {

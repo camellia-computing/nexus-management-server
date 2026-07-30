@@ -1216,7 +1216,7 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => Arc::new(AdminKeyring::ephemeral()),
     };
-    keyring.readiness_check(&repository).await?;
+    keyring.worker_readiness_check(&repository).await?;
     let storage = ObjectStorageService::new(
         application.clone(),
         keyring.clone(),
@@ -1268,7 +1268,10 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
                 let mut cleanup_failed = false;
                 if now >= next_dependency_check {
                     dependencies_ready = true;
-                    if let Err(error) = keyring.readiness_check(application.repository()).await {
+                    if let Err(error) = keyring
+                        .worker_readiness_check(application.repository())
+                        .await
+                    {
                         dependencies_ready = false;
                         tracing::error!(%error, "admin worker keyring readiness check failed");
                     }
