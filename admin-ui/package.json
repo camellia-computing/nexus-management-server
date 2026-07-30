@@ -14,7 +14,7 @@
     "test:visual": "pnpm build && playwright test",
     "test:visual:built": "playwright test",
     "test:visual:stability": "playwright test --workers=1 --repeat-each=2 --grep 'all text sizes persist'",
-    "test:live": "playwright test --config playwright.live.config.ts"
+    "test:live": "svelte-kit sync && playwright test --config playwright.live.config.ts"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.12.1",

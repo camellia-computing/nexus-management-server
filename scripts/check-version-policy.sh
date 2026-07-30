@@ -19,6 +19,9 @@ node_version="$(tr -d '[:space:]' < .node-version)"
 jq -e '.engines.pnpm == null' admin-ui/package.json >/dev/null || fail 'pnpm must not be repeated in engines'
 package_manager="$(jq -r '.packageManager // empty' admin-ui/package.json)"
 [[ "$package_manager" =~ ^pnpm@[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'packageManager must pin an exact pnpm version'
+[[ "$(jq -r '.scripts["test:live"] // empty' admin-ui/package.json)" == \
+  'svelte-kit sync && playwright test --config playwright.live.config.ts' ]] ||
+  fail 'live Admin UI tests must generate the SvelteKit TypeScript configuration'
 jq -e '
   [(.dependencies // {}), (.devDependencies // {})]
   | add
