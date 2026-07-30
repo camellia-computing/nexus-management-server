@@ -87,10 +87,13 @@ The migration command revokes ambient `PUBLIC` access and atomically reapplies a
 allowlist after every migration. It fails if any runtime role is missing, privileged, duplicated, or
 if a new table has not been classified. The public login has no DDL or Admin identity/job/storage
 table access. Validate this from the deployment network before accepting a rollout.
+Schema readiness reads privilege-independent PostgreSQL catalog metadata; never grant a runtime role
+access to hidden credential tables merely to make a readiness probe pass.
 
 迁移命令会撤销环境中的 `PUBLIC` 权限，并在每次迁移后按显式表清单原子重授。任何运行角色缺失、带有
 管理属性、重复，或新增表未分类时都会失败。公开登录不具备 DDL，也不能访问 Admin 身份、任务和对象
-存储表。接受发布前必须从部署网络验证该边界。
+存储表。接受发布前必须从部署网络验证该边界。Schema readiness 使用不受数据权限过滤的 PostgreSQL
+系统目录；不得为了让就绪探针通过而向运行角色授予隐藏凭据表权限。
 
 Each role has a distinct operations port (`9091`, `9092`, `9093` in the examples). These ports serve
 `/healthz` and `/metrics`; the Admin Worker port also serves `/readyz`, which reflects its current

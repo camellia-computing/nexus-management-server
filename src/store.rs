@@ -2133,6 +2133,9 @@ impl PostgresRepository {
 #[async_trait]
 impl LicenseRepository for PostgresRepository {
     async fn readiness_check(&self) -> Result<()> {
+        // `information_schema` hides columns the current role cannot read. Use
+        // PostgreSQL's metadata catalog so schema readiness remains independent
+        // from each runtime role's intentionally narrower data privileges.
         let row = sqlx::query(
             "SELECT
                 to_regclass('public.accounts') IS NOT NULL
@@ -2171,11 +2174,12 @@ impl LicenseRepository for PostgresRepository {
                       AND pg_get_triggerdef(oid) LIKE '%INSERT OR UPDATE OF state%'
                 )
                 AND EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_schema = 'public'
-                      AND table_name = 'device_member_bindings'
-                      AND column_name = 'account_id'
-                      AND is_nullable = 'NO'
+                    SELECT 1 FROM pg_attribute
+                    WHERE attrelid = to_regclass('public.device_member_bindings')
+                      AND attname = 'account_id'
+                      AND attnum > 0
+                      AND NOT attisdropped
+                      AND attnotnull
                 )
                 AND EXISTS (
                     SELECT 1 FROM pg_trigger
@@ -2192,38 +2196,43 @@ impl LicenseRepository for PostgresRepository {
                     'public.observe_service_time_authority(bigint,bigint)'
                 ) IS NOT NULL
                 AND EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_schema = 'public'
-                      AND table_name = 'licenses'
-                      AND column_name = 'plan_revision'
-                      AND is_nullable = 'NO'
+                    SELECT 1 FROM pg_attribute
+                    WHERE attrelid = to_regclass('public.licenses')
+                      AND attname = 'plan_revision'
+                      AND attnum > 0
+                      AND NOT attisdropped
+                      AND attnotnull
                 )
                 AND EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_schema = 'public'
-                      AND table_name = 'licenses'
-                      AND column_name = 'purchased_seats'
-                      AND is_nullable = 'NO'
+                    SELECT 1 FROM pg_attribute
+                    WHERE attrelid = to_regclass('public.licenses')
+                      AND attname = 'purchased_seats'
+                      AND attnum > 0
+                      AND NOT attisdropped
+                      AND attnotnull
                 )
                 AND NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_schema = 'public'
-                      AND table_name = 'licenses'
-                      AND column_name = 'document'
+                    SELECT 1 FROM pg_attribute
+                    WHERE attrelid = to_regclass('public.licenses')
+                      AND attname = 'document'
+                      AND attnum > 0
+                      AND NOT attisdropped
                 )
                 AND EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_schema = 'public'
-                      AND table_name = 'refresh_sessions'
-                      AND column_name = 'device_id'
-                      AND is_nullable = 'NO'
+                    SELECT 1 FROM pg_attribute
+                    WHERE attrelid = to_regclass('public.refresh_sessions')
+                      AND attname = 'device_id'
+                      AND attnum > 0
+                      AND NOT attisdropped
+                      AND attnotnull
                 )
                 AND EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_schema = 'public'
-                      AND table_name = 'refresh_sessions'
-                      AND column_name = 'proof_state'
-                      AND is_nullable = 'NO'
+                    SELECT 1 FROM pg_attribute
+                    WHERE attrelid = to_regclass('public.refresh_sessions')
+                      AND attname = 'proof_state'
+                      AND attnum > 0
+                      AND NOT attisdropped
+                      AND attnotnull
                 )
                 AND to_regclass(
                     'public.refresh_sessions_one_active_proven_per_device_idx'

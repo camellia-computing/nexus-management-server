@@ -4095,6 +4095,8 @@ async fn admin_security_headers(
 }
 
 pub(crate) async fn admin_schema_ready(repository: &PostgresRepository) -> Result<(), ApiError> {
+    // `information_schema` is privilege-filtered; readiness must inspect the
+    // deployed shape without widening a least-privilege runtime role.
     let ready: bool = sqlx::query_scalar(
         "SELECT to_regclass('public.admin_users') IS NOT NULL
              AND to_regclass('public.admin_sessions') IS NOT NULL
@@ -4105,19 +4107,19 @@ pub(crate) async fn admin_schema_ready(repository: &PostgresRepository) -> Resul
              AND to_regclass('public.admin_secret_deliveries') IS NOT NULL
              AND to_regclass('public.audit_events_global_keyset_idx') IS NOT NULL
              AND EXISTS (
-                 SELECT 1 FROM information_schema.columns
-                 WHERE table_schema = 'public' AND table_name = 'payment_evidence_attachments'
-                   AND column_name = 'object_id'
+                 SELECT 1 FROM pg_attribute
+                 WHERE attrelid = to_regclass('public.payment_evidence_attachments')
+                   AND attname = 'object_id' AND attnum > 0 AND NOT attisdropped
              )
              AND EXISTS (
-                 SELECT 1 FROM information_schema.columns
-                 WHERE table_schema = 'public' AND table_name = 'accounts'
-                   AND column_name = 'row_version'
+                 SELECT 1 FROM pg_attribute
+                 WHERE attrelid = to_regclass('public.accounts')
+                   AND attname = 'row_version' AND attnum > 0 AND NOT attisdropped
              )
              AND EXISTS (
-                 SELECT 1 FROM information_schema.columns
-                 WHERE table_schema = 'public' AND table_name = 'admin_operations'
-                   AND column_name = 'response_document'
+                 SELECT 1 FROM pg_attribute
+                 WHERE attrelid = to_regclass('public.admin_operations')
+                   AND attname = 'response_document' AND attnum > 0 AND NOT attisdropped
              )",
     )
     .fetch_one(&repository.pool)

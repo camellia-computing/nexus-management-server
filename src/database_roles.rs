@@ -633,6 +633,42 @@ mod tests {
                 .await
                 .expect("inspect Worker identity mutation privilege");
 
+        let test_owner: String = sqlx::query_scalar("SELECT current_user")
+            .fetch_one(&repository.pool)
+            .await
+            .expect("inspect test database owner");
+        for role in [&roles.public, &roles.admin_web, &roles.admin_worker] {
+            sqlx::query(AssertSqlSafe(format!(
+                "GRANT {} TO {}",
+                quote_identifier(role),
+                quote_identifier(&test_owner)
+            )))
+            .execute(&repository.pool)
+            .await
+            .expect("allow the test owner to assume and clean up each runtime role");
+        }
+        let worker_role = quote_identifier(&roles.admin_worker);
+        let worker_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .after_connect(move |connection, _| {
+                let statement = AssertSqlSafe(format!("SET ROLE {worker_role}"));
+                Box::pin(async move {
+                    sqlx::query(statement).execute(connection).await?;
+                    Ok(())
+                })
+            })
+            .connect(&database_url)
+            .await
+            .expect("connect through restricted Worker role");
+        let worker_repository = PostgresRepository { pool: worker_pool };
+        crate::store::LicenseRepository::readiness_check(&worker_repository)
+            .await
+            .expect("shared schema readiness must not require hidden credential tables");
+        crate::admin_http::admin_schema_ready(&worker_repository)
+            .await
+            .expect("Admin schema readiness must remain privilege independent");
+        worker_repository.pool.close().await;
+
         for role in [&roles.public, &roles.admin_web, &roles.admin_worker] {
             sqlx::query(AssertSqlSafe(format!(
                 "DROP OWNED BY {}",

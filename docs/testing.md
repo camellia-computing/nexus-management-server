@@ -85,7 +85,9 @@ unready, ready, and recovered-failure states. A bounded fake ClamAV endpoint ver
 `zPING`/`PONG` dependency probe used at startup and during continuous Worker checks. Worker keyring
 readiness inventories only the enrollment, secret-delivery, and stored-object references available
 to its least-privilege database role; the final-container test proves that role starts without access
-to password or TOTP credential tables.
+to password or TOTP credential tables. The PostgreSQL role integration test assumes the actual Worker
+role and runs both shared and Admin schema readiness, preventing privilege-filtered catalog views from
+being mistaken for missing migrations.
 
 Object-storage fault-injection tests use a fake external backend to commit bytes before returning a
 failed `put`, proving that the staging metadata survives and the worker can authenticate and finalize
@@ -105,7 +107,9 @@ step-up 对话框及重试沿用同一操作标识；真实浏览器还验证一
 失败时同时删除两者，从而兼容原生 Linux 与 WSL 下的 Docker Desktop，且不把明文放入命令行参数。
 网络 trace 被禁用，失败截图会模糊认证与一次性值。不得增加会打印请求正文、Cookie、TOTP、交付
 令牌或明文激活码的调试输出。Worker 的密钥就绪检查仅盘点其最小权限角色可访问的注册状态、秘密
-交付和对象引用；最终容器测试同时证明 Worker 无权读取密码/TOTP 表但仍可正常启动。
+交付和对象引用；最终容器测试同时证明 Worker 无权读取密码/TOTP 表但仍可正常启动。PostgreSQL
+角色集成测试还会切换到真实 Worker 角色执行共享与 Admin schema readiness，避免把权限过滤后的
+目录视图误判为迁移缺失。
 
 确定性浏览器门禁还会验证 manifest、精确图标尺寸、Service Worker 注册/更新及 Cache Storage
 白名单。断网检查要求带哈希的应用资源仍可读取，而导航、manifest、外观初始化脚本、管理 API 与
