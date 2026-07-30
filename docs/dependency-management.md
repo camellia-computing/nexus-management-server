@@ -14,10 +14,11 @@ This policy keeps server, administration UI, database-test, and container builds
 | JavaScript direct dependencies | `admin-ui/package.json` | Exact versions, with the lockfile fixing the full graph |
 | Rust dependencies | Cargo manifests plus `Cargo.lock` | Normal Cargo-compatible ranges; the lockfile fixes builds |
 | GitHub Actions | Workflow `uses` entries | Full commit SHA with a readable release comment |
+| Workflow security tools | Quality workflow | Exact stable uv and zizmor releases; online pedantic findings fail CI |
 | Container inputs | Dockerfile and Compose image references | Readable tag plus immutable manifest digest; the production service image supports `linux/amd64` |
 | Hosted runners | Workflow `runs-on` entries | Explicit image family; hosted image patching remains provider-managed |
 
-Workflow files must not repeat Node.js, pnpm, or Rust version literals. `scripts/check-version-policy.sh` checks the canonical-file relationships, action and image immutability, PostgreSQL parity between CI and Compose, Git revisions, and the exception register below. Use `scripts/update-toolchains.sh` for Node.js, pnpm, Rust, or PostgreSQL changes so every coupled source and digest is updated and validated as one worktree transaction.
+Workflow files must not repeat Node.js, pnpm, or Rust version literals. `scripts/check-version-policy.sh` checks the canonical-file relationships, action and image immutability, blocking actionlint and zizmor gates, PostgreSQL parity between CI and Compose, Git revisions, and the exception register below. Use `scripts/update-toolchains.sh` for Node.js, pnpm, Rust, or PostgreSQL changes so every coupled source and digest is updated and validated as one worktree transaction.
 
 ## Update policy
 
@@ -25,7 +26,7 @@ Dependabot opens separate major upgrades and groups only compatible minor and pa
 
 Automated commit titles use `build(deps)` for application and independently updatable container dependencies and `ci(deps)` for GitHub Actions. Reviewed coupled toolchain or image changes use `build(toolchain)`. An update that fixes a concrete product or security defect may instead use `fix(deps)` or `fix(security)`.
 
-Every non-release pull request, including dependency, toolchain, image, and workflow updates, must pass the complete server, PostgreSQL, administration UI, browser, audit, and candidate-image gates. The exact `main` commit is validated again after merge. Trusted release proposals reuse the recorded validation of their exact base commit, validate only the generated release delta, and leave signing and publication to the protected tag workflow. Updates are never auto-merged. A maintainer reviews release notes, lockfile and image-digest scope, licensing, security impact, data-format or migration implications, and rollback risk. Node.js, pnpm, Rust, PostgreSQL, runner-family, base-image major, and major framework changes require an explicit compatibility review.
+Every non-release pull request, including dependency, toolchain, image, and workflow updates, must pass the complete server, PostgreSQL, administration UI, browser, audit, and candidate-image gates. Frozen installation is followed by `pnpm peers check`, so a resolvable lockfile with an internally unsupported peer graph still fails. The exact `main` commit is validated again after merge. Trusted release proposals reuse the recorded validation of their exact base commit, validate only the generated release delta, and leave signing and publication to the protected tag workflow. Updates are never auto-merged. A maintainer reviews release notes, lockfile and image-digest scope, licensing, security impact, data-format or migration implications, and rollback risk. Node.js, pnpm, Rust, PostgreSQL, runner-family, base-image major, and major framework changes require an explicit compatibility review.
 
 GitHub's current Dependabot support covers pnpm lockfiles through pnpm 10, so the npm version updater is deliberately disabled while this project uses pnpm 11. Vulnerability alerts and automated security updates remain enabled at repository level, while maintainers review `pnpm outdated` and create narrow dependency-update pull requests with a regenerated frozen lockfile. Restore the updater only after GitHub documents pnpm 11 support and a test pull request preserves the lockfile.
 
@@ -33,10 +34,10 @@ Rust and Node.js image tags are coupled to the canonical toolchain files, and th
 
 ```bash
 bash scripts/update-toolchains.sh \
-  --node 24.18.1 --node-digest sha256:<64-hex-digest> \
-  --rust 1.98.0 --rust-digest sha256:<64-hex-digest> \
+  --node 24.18.0 --node-digest sha256:<64-hex-digest> \
+  --rust 1.97.1 --rust-digest sha256:<64-hex-digest> \
   --postgres 18-alpine --postgres-digest sha256:<64-hex-digest> \
-  --pnpm 11.15.0
+  --pnpm 11.18.0
 ```
 
 The command rejects dirty target files, prepares every related edit, runs the version policy, and restores the original files if validation fails. Resolve each digest from the named upstream registry tag, review its manifest and release notes, and run the complete quality, PostgreSQL, administration UI, browser and container gates before merging. CI denies yanked Cargo packages in addition to audited vulnerabilities.
@@ -46,8 +47,10 @@ The command rejects dirty target files, prepares every related edit, runs the ve
 | Exception | Reason | Owner | Review by | Removal condition |
 | --- | --- | --- | --- | --- |
 | pnpm 11 Dependabot updater disabled | GitHub does not yet document pnpm 11 lockfile support; unreliable generated pull requests would fail the frozen-lockfile gate. | Release maintainers | 2026-10-15 | Re-enable the npm ecosystem after documented pnpm 11 support and a representative update pull request pass. |
+| TypeScript 6.0.3 while TypeScript 7 is current | `svelte-check` 4.7.4 declares support for TypeScript 5 and 6 only. Moving the authoritative Svelte/TypeScript gate to an unsupported compiler major would make a green check non-contractual. | Admin UI maintainers | 2026-09-15 | Upgrade when a supported current `svelte-check` release declares TypeScript 7 compatibility, then run Svelte check, browser E2E, and the production container gates. |
+| `@napi-rs/wasm-runtime` 1.1.6 override | `@rolldown/binding-wasm32-wasi` 1.1.5 pins `@emnapi/core` and `@emnapi/runtime` 1.11.1 but its compatible range otherwise resolves `wasm-runtime` 1.2.0, which requires the incompatible pre-release emnapi 2.0 pair. The exact stable runtime removes peer drift from Vite's optional WASI fallback without introducing alpha dependencies. | Admin UI maintainers | 2026-09-15 | Remove the override when the current Rolldown WASI binding and runtime resolve one stable compatible emnapi generation, then require `pnpm peers check`, frontend build, browser E2E, and the production container gates. |
 | `cookie` override at 0.7.2 | The administration UI forces a reviewed security floor for the transitive SvelteKit cookie parser. | Admin UI maintainers | 2026-10-15 | Remove the override when the supported dependency graph resolves to an equal or newer safe version without it and both audit and browser gates pass. |
-| `object_store` Git revision | Required fixes are available upstream but not yet in the next crates.io patch. The dependency uses a full immutable commit revision. | Storage maintainers | 2026-10-15 | Replace it with crates.io `object_store` 0.14.1 or newer as soon as that release contains the required fixes, then regenerate `Cargo.lock` and run storage integration coverage. |
+| Release merge `workflow_run` trigger | Approval and CI can complete in either order, so the merge controller must re-evaluate readiness after either event. The privileged path checks out only trusted `main` control, accepts only the same-repository `release/next` branch and exact successful CI SHA, revalidates approval and repository policy, and mints the scoped write token only after readiness succeeds. | Release maintainers | 2026-09-15 | Remove the trigger when GitHub provides an order-independent protected merge primitive that preserves the exact reviewed-SHA and trusted-control guarantees; otherwise re-audit every change to the merge controller or release readiness checks. |
 
 No other ignored advisory, accepted maintenance warning, floating action, mutable external image, unbounded JavaScript range, or unpinned Git revision is permitted without a dated entry here.
 

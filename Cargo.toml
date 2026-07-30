@@ -11,20 +11,15 @@ publish = false
 [dependencies]
 async-trait = "0.1.89"
 argon2 = "0.5.3"
-async-stream = "0.3.6"
 axum = { version = "0.8.9", features = ["multipart"] }
-base64 = "0.22.1"
+base64 = { version = "0.23.0", default-features = false, features = ["std"] }
 bytes = "1.11.1"
 chacha20poly1305 = "0.11.0"
-futures-util = "0.3.31"
 hkdf = "0.13.0"
 hmac = "0.13.0"
 httpdate = "1.0.3"
-jsonwebtoken = { version = "10.4.0", default-features = false, features = ["use_pem"] }
-mime_guess = "2.0.5"
-# TODO(deps): Once object_store 0.14.1 is published, replace the line below with:
-# object_store = { version = "0.14.1", features = ["aws"] }
-object_store = { version = "0.14.0", git = "https://github.com/apache/arrow-rs-object-store.git", rev = "fd44ebb9c1158660795ec22d7b11acf31c3fe113", features = ["aws"] }
+jsonwebtoken = { version = "11.0.0", default-features = false, features = ["use_pem"] }
+object_store = { version = "0.14.1", features = ["aws"] }
 p256 = { version = "0.14.0", features = ["ecdsa", "pem", "pkcs8"] }
 rand = "0.10.2"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
@@ -46,7 +41,6 @@ url = "2.5.7"
 uuid = { version = "1.23.4", features = ["v4"] }
 zeroize = "1.9.0"
 rust_decimal = { version = "1.40.0", features = ["serde-with-str"] }
-zstd = "0.13.3"
 
 [dev-dependencies]
 http-body-util = "0.1.3"

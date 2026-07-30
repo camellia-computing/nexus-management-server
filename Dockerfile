@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+# syntax=docker/dockerfile:1.24.0@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
 
 FROM node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS admin-ui-builder
 WORKDIR /app
@@ -11,7 +11,7 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
 COPY admin-ui ./
 RUN pnpm build
 
-FROM rust:1.97.0-bookworm@sha256:4700e599cc24fb4145b7f4a4c611695883e7be6e261cde0f3d4436eeb0af17c1 AS builder
+FROM rust:1.97.1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa AS builder
 WORKDIR /app
 COPY rust-toolchain.toml ./
 RUN actual="$(rustc --version)" \
