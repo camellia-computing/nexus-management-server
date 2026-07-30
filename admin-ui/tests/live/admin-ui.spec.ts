@@ -422,7 +422,29 @@ test('the final image supports complete real control-plane journeys', async ({ p
     ).items.some((invoice) => invoice.id === liveInvoiceId)
   ).toBe(true);
 
+  await expect(page.getByRole('tab', { name: /^Invoices/u })).toHaveAttribute(
+    'aria-selected',
+    'true'
+  );
+  const claimPageResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      response.request().method() === 'GET' &&
+      url.pathname === '/api/v1/billing/payment-claims' &&
+      url.searchParams.get('pageSize') === '50'
+    );
+  });
   await page.getByRole('tab', { name: /^Payment review/u }).click();
+  const claimPage = await claimPageResponse;
+  expect(claimPage.ok()).toBe(true);
+  expect(
+    (
+      (await claimPage.json()) as {
+        items: Array<{ id: string }>;
+        nextCursor: string | null;
+      }
+    ).items.some((claim) => claim.id === credentials.paymentClaimId)
+  ).toBe(true);
   const claimRow = page.locator('tr').filter({ hasText: credentials.paymentClaimId });
   await expect(claimRow).toBeVisible();
   await claimRow.getByRole('button', { name: 'Manage' }).click();

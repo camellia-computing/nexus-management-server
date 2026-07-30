@@ -595,6 +595,13 @@ run_admin billing payment submit "$billing_claim_id" --invoice "$billing_invoice
   --method "$billing_method_id" --transaction "runtime-$resource_suffix" --amount 159.00 \
   --asset USD --paid-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --submitted-by runtime_customer \
   --payer 'Runtime Customer' --note 'Synthetic clean-evidence scenario' >/dev/null
+curl --fail-with-body --silent --show-error --config "$auth_config" --get \
+  --data-urlencode 'pageSize=1' --data-urlencode "query=$billing_claim_id" \
+  --output "$temporary_directory/payment-claim-page.json" \
+  "$admin_base/api/v1/billing/payment-claims"
+jq -e --arg id "$billing_claim_id" \
+  '.items | length == 1 and .[0].id == $id and .[0].status == "submitted"' \
+  "$temporary_directory/payment-claim-page.json" >/dev/null
 printf '%%PDF-1.7\n1 0 obj<</Type/Catalog>>endobj\n%%%%EOF\n' \
   >"$temporary_directory/runtime-clean-receipt.pdf"
 chmod 0600 "$temporary_directory/runtime-clean-receipt.pdf"
