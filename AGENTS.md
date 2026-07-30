@@ -129,8 +129,10 @@ addresses, customer data, credentials, or machine-local procedures here.
 - List endpoints use bounded keyset pagination with canonical opaque cursors. Never load an account,
   workspace, audit history, job, or delivery inventory into an unbounded response or memory vector.
 - Production starts long-lived roles with automatic migrations disabled. The same immutable image's
-  `migrate` role applies migrations first; every service role then performs non-destructive schema
-  readiness before binding/serving.
+  `migrate` role applies migrations and explicit runtime grants first; every service role then
+  performs non-destructive schema readiness before binding/serving. Migration, public, Admin Web,
+  and Worker use distinct OS and database identities. Public code has neither DDL nor Admin
+  identity/job/storage table privileges; every new table must be classified before migration exits.
 - Readiness must prove a relation exists before referencing it. Never rewrite a migration contained
   in a published or deployed release or edit `_sqlx_migrations`; append a deterministic migration and
   test a fresh database plus the latest actually released schema when one exists. Development-only
@@ -226,7 +228,9 @@ addresses, customer data, credentials, or machine-local procedures here.
 ## Jobs, observability, and operations
 
 - Job preview/create, leasing, cancellation, retry, and result commit are idempotent across worker
-  crashes. A canceled job cannot be leased again; a stale worker cannot overwrite a newer lease.
+  crashes. A canceled job cannot be leased again; a stale worker cannot overwrite a newer
+  monotonically fenced lease. Lease expiry never turns an ambiguously committed item into a terminal
+  failure: the next owner replays the durable item operation and reconciles its single result.
 - Workers use bounded batches, concurrency, timeouts, retry schedules, retention, and `SKIP LOCKED`
   where appropriate. Expired leases are recoverable and never imply success.
 - Every commercial/security-sensitive success and denial writes a structured audit event with trusted

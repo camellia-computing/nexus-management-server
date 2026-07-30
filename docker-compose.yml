@@ -6,7 +6,6 @@ x-common-environment: &common-environment
   CAMELLIA_NEXUS_HTTP_FAILURE_LOG_LEVEL: warn
   CAMELLIA_NEXUS_DATABASE_MAX_CONNECTIONS: 8
   CAMELLIA_NEXUS_DATABASE_ACQUIRE_TIMEOUT_SECONDS: 5
-  DATABASE_URL: postgres://camellia:${CAMELLIA_NEXUS_DATABASE_PASSWORD:?set CAMELLIA_NEXUS_DATABASE_PASSWORD}@postgres:5432/camellia_license
 
 x-container-hardening: &container-hardening
   read_only: true
@@ -36,6 +35,10 @@ services:
         condition: service_healthy
     environment:
       <<: *common-environment
+      DATABASE_URL: postgres://${CAMELLIA_NEXUS_DATABASE_MIGRATE_ROLE:-nexus_migrate}:${CAMELLIA_NEXUS_DATABASE_MIGRATE_PASSWORD:?set CAMELLIA_NEXUS_DATABASE_MIGRATE_PASSWORD}@postgres:5432/${CAMELLIA_NEXUS_DATABASE_NAME:-nexus}
+      CAMELLIA_NEXUS_DATABASE_PUBLIC_ROLE: ${CAMELLIA_NEXUS_DATABASE_PUBLIC_ROLE:-nexus_public}
+      CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_ROLE: ${CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_ROLE:-nexus_admin_web}
+      CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_ROLE: ${CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_ROLE:-nexus_admin_worker}
     restart: "no"
 
   management-server:
@@ -44,6 +47,7 @@ services:
     command: ["serve"]
     environment:
       <<: *common-environment
+      DATABASE_URL: postgres://${CAMELLIA_NEXUS_DATABASE_PUBLIC_ROLE:-nexus_public}:${CAMELLIA_NEXUS_DATABASE_PUBLIC_PASSWORD:?set CAMELLIA_NEXUS_DATABASE_PUBLIC_PASSWORD}@postgres:5432/${CAMELLIA_NEXUS_DATABASE_NAME:-nexus}
       CAMELLIA_NEXUS_LICENSE_BIND: 0.0.0.0:8088
       CAMELLIA_NEXUS_LICENSE_STORAGE: postgres
       CAMELLIA_NEXUS_LICENSE_ISSUER: https://license.example.com
@@ -90,6 +94,7 @@ services:
         condition: service_healthy
     environment:
       <<: *common-environment
+      DATABASE_URL: postgres://${CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_ROLE:-nexus_admin_web}:${CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_PASSWORD:?set CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_PASSWORD}@postgres:5432/${CAMELLIA_NEXUS_DATABASE_NAME:-nexus}
       CAMELLIA_NEXUS_ADMIN_BIND: 0.0.0.0:8090
       CAMELLIA_NEXUS_ADMIN_PUBLIC_ORIGIN: https://console.example.com
       CAMELLIA_NEXUS_ADMIN_REQUEST_TIMEOUT_SECONDS: 180
@@ -126,6 +131,7 @@ services:
         condition: service_healthy
     environment:
       <<: *common-environment
+      DATABASE_URL: postgres://${CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_ROLE:-nexus_admin_worker}:${CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_PASSWORD:?set CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_PASSWORD}@postgres:5432/${CAMELLIA_NEXUS_DATABASE_NAME:-nexus}
       CAMELLIA_NEXUS_ADMIN_KEYRING_PATH: /run/secrets/admin_keyring
       CAMELLIA_NEXUS_OBJECT_STORAGE: database
       CAMELLIA_NEXUS_OBJECT_HARD_LIMIT_BYTES: 21474836480
@@ -152,16 +158,23 @@ services:
   postgres:
     image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
     environment:
-      POSTGRES_DB: camellia_license
-      POSTGRES_USER: camellia
-      POSTGRES_PASSWORD: ${CAMELLIA_NEXUS_DATABASE_PASSWORD:?set CAMELLIA_NEXUS_DATABASE_PASSWORD}
+      POSTGRES_DB: ${CAMELLIA_NEXUS_DATABASE_NAME:-nexus}
+      POSTGRES_USER: ${CAMELLIA_NEXUS_DATABASE_MIGRATE_ROLE:-nexus_migrate}
+      POSTGRES_PASSWORD: ${CAMELLIA_NEXUS_DATABASE_MIGRATE_PASSWORD:?set CAMELLIA_NEXUS_DATABASE_MIGRATE_PASSWORD}
+      CAMELLIA_NEXUS_DATABASE_PUBLIC_ROLE: ${CAMELLIA_NEXUS_DATABASE_PUBLIC_ROLE:-nexus_public}
+      CAMELLIA_NEXUS_DATABASE_PUBLIC_PASSWORD: ${CAMELLIA_NEXUS_DATABASE_PUBLIC_PASSWORD:?set CAMELLIA_NEXUS_DATABASE_PUBLIC_PASSWORD}
+      CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_ROLE: ${CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_ROLE:-nexus_admin_web}
+      CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_PASSWORD: ${CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_PASSWORD:?set CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_PASSWORD}
+      CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_ROLE: ${CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_ROLE:-nexus_admin_worker}
+      CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_PASSWORD: ${CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_PASSWORD:?set CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_PASSWORD}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U camellia -d camellia_license"]
+      test: ["CMD-SHELL", "pg_isready --username $$POSTGRES_USER --dbname $$POSTGRES_DB"]
       interval: 5s
       timeout: 3s
       retries: 20
     volumes:
       - postgres-18-data:/var/lib/postgresql
+      - ./deploy/postgres/init-runtime-roles.sh:/docker-entrypoint-initdb.d/10-runtime-roles.sh:ro
     restart: unless-stopped
 
 secrets:

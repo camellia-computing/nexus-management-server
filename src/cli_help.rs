@@ -769,8 +769,10 @@ USAGE / 用法:
   camellia-nexus-management-server migrate
 
 BEHAVIOR / 行为:
-  Applies every pending append-only migration, verifies schema readiness, and exits.
-  应用全部待执行的追加式迁移，验证数据库结构已就绪后退出。
+  Applies every pending append-only migration, replaces ambient database privileges
+  with explicit per-runtime grants, verifies schema readiness, and exits.
+  应用全部待执行的追加式迁移，以显式的逐角色授权替换数据库环境权限，
+  验证数据库结构已就绪后退出。
 
   Run this one-shot role with the same immutable artifact before starting or rolling
   any long-running service role. Never rewrite an applied migration or its SQLx record.
@@ -779,14 +781,19 @@ BEHAVIOR / 行为:
 
 REQUIRED ENVIRONMENT / 必需环境:
   DATABASE_URL                PostgreSQL connection URL / PostgreSQL 连接地址
+  CAMELLIA_NEXUS_DATABASE_PUBLIC_ROLE
+  CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_ROLE
+  CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_ROLE
+                              Three distinct unprivileged login roles in production
+                              生产环境中的三个独立无特权登录角色
 
 RELATED ENVIRONMENT / 相关环境:
   CAMELLIA_NEXUS_LICENSE_ENV        development | production
   CAMELLIA_NEXUS_LOG_LEVEL          Runtime log level / 运行日志级别
   CAMELLIA_NEXUS_LOG_FORMAT         compact | json
 
-See README.md for deployment order and migration recovery rules.
-部署顺序及迁移恢复规则见 README.md。"#),
+See docs/systemd-deployment.md for role provisioning, deployment order, and recovery.
+角色创建、部署顺序及恢复规则见 docs/systemd-deployment.md。"#),
         "healthcheck" => Ok(r#"Camellia Nexus Management Server — healthcheck
 Probe one local process endpoint / 探测一个本机进程端点
 

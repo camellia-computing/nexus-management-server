@@ -197,6 +197,27 @@ bundle_postgres="$(sed -nE "s/^postgres_image='(postgres:[^']+)'$/\1/p" scripts/
   fail 'CI, Compose, and the Windows E2E bundle must use the same PostgreSQL digest'
 grep -Fq -- '- postgres-18-data:/var/lib/postgresql' docker-compose.yml ||
   fail 'PostgreSQL 18 Compose data must be mounted at /var/lib/postgresql'
+grep -Fq './deploy/postgres/init-runtime-roles.sh:/docker-entrypoint-initdb.d/10-runtime-roles.sh:ro' \
+  docker-compose.yml ||
+  fail 'Compose must create separate unprivileged database runtime roles on first start'
+for role in MIGRATE PUBLIC ADMIN_WEB ADMIN_WORKER; do
+  grep -Fq "CAMELLIA_NEXUS_DATABASE_${role}_PASSWORD" docker-compose.yml ||
+    fail "Compose is missing the ${role} database credential boundary"
+done
+if grep -q '^DATABASE_URL=' deploy/management-common.env.example; then
+  fail 'the common systemd environment must not share one database credential across roles'
+fi
+for role_file in migrate public-api admin-web admin-worker; do
+  grep -q '^DATABASE_URL=postgres://' "deploy/${role_file}.env.example" ||
+    fail "${role_file} must declare its own database login"
+done
+grep -Fq 'apply_runtime_database_grants' src/main.rs ||
+  fail 'the migration role must atomically apply explicit runtime database grants'
+grep -Fq 'lease_generation = lease_generation + 1' src/admin_jobs.rs ||
+  fail 'bulk-job leases must use a monotonic fencing generation'
+if grep -Fq 'worker_lease_lost' src/admin_jobs.rs; then
+  fail 'lease takeover must reconcile ambiguous items instead of reporting terminal failure'
+fi
 grep -Fq -- '- postgres-data:/var/lib/postgresql' scripts/provision-e2e-compose.sh ||
   fail 'the disposable E2E stack must use the PostgreSQL 18 data mount'
 grep -Fq '/run/desktop/mnt/host/' scripts/provision-e2e-compose.sh ||

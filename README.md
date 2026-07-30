@@ -17,7 +17,7 @@ Camellia Nexus Management Server 是 Camellia Nexus 桌面客户端的生产授�
 - 通过 Admin CLI 发放和管理授权码
 - JSON 日志，便于平台采集和审计
 - 与业务入口分离的私有 Prometheus 指标监听器
-- 数据库迁移在受控环境中执行
+- 数据库迁移在受控环境中执行，迁移、公开 API、Admin Web 与 Worker 使用四个独立数据库身份
 
 最小环境变量示例：
 
@@ -25,7 +25,7 @@ Camellia Nexus Management Server 是 Camellia Nexus 桌面客户端的生产授�
 CAMELLIA_NEXUS_LICENSE_ENV=production
 CAMELLIA_NEXUS_LICENSE_BIND=0.0.0.0:8088
 CAMELLIA_NEXUS_LICENSE_STORAGE=postgres
-DATABASE_URL=postgres://camellia:replace-me@postgres:5432/camellia_license
+DATABASE_URL=postgres://nexus_public:replace-with-url-safe-secret@postgres:5432/nexus
 CAMELLIA_NEXUS_LICENSE_ISSUER=https://license.example.com
 CAMELLIA_NEXUS_LICENSE_AUDIENCE=camellia-nexus-desktop
 CAMELLIA_NEXUS_LICENSE_KEY_ID=entitlement-2026-00
@@ -470,6 +470,8 @@ scripts/start-local.sh --help
 
 最终容器、真实 Admin UI 与 Windows 原生客户端的分层验证范围、一次性 Compose 后端和安全清理要求见
 [生产级验证](docs/testing.md)。
+四角色 OS/数据库隔离、secret 所有权与迁移后显式授权见
+[systemd 部署](docs/systemd-deployment.md)；Compose 使用同一数据库边界。
 
 隔离实验可使用内存存储：
 
@@ -496,7 +498,8 @@ Production deployments require:
 - Activation codes issued and managed through the Admin CLI
 - JSON logs for platform ingestion and audit
 - A private Prometheus metrics listener separate from product traffic
-- Database migrations executed in a controlled environment
+- Database migrations executed in a controlled environment, with separate migration, public API,
+  Admin Web, and Worker database identities
 
 Minimum environment:
 
@@ -504,7 +507,7 @@ Minimum environment:
 CAMELLIA_NEXUS_LICENSE_ENV=production
 CAMELLIA_NEXUS_LICENSE_BIND=0.0.0.0:8088
 CAMELLIA_NEXUS_LICENSE_STORAGE=postgres
-DATABASE_URL=postgres://camellia:replace-me@postgres:5432/camellia_license
+DATABASE_URL=postgres://nexus_public:replace-with-url-safe-secret@postgres:5432/nexus
 CAMELLIA_NEXUS_LICENSE_ISSUER=https://license.example.com
 CAMELLIA_NEXUS_LICENSE_AUDIENCE=camellia-nexus-desktop
 CAMELLIA_NEXUS_LICENSE_KEY_ID=entitlement-2026-00
@@ -533,7 +536,11 @@ CAMELLIA_NEXUS_MAINTENANCE_INTERVAL_SECONDS=3600
 CAMELLIA_NEXUS_CLEANUP_BATCH_SIZE=1000
 ```
 
-Activation codes are stored in PostgreSQL as hashes and are managed by the Admin CLI. Production always rejects static environment activation codes; `CAMELLIA_NEXUS_LICENSE_ACTIVATION_CODES` is reserved for development environments.
+Activation codes are stored in PostgreSQL as hashes and are managed by the Admin CLI. Production
+always rejects static environment activation codes; `CAMELLIA_NEXUS_LICENSE_ACTIVATION_CODES` is
+reserved for development environments. The [systemd deployment contract](docs/systemd-deployment.md)
+defines the same four OS/database trust boundaries used by Compose, including secret ownership and
+post-migration grants.
 
 ### Container image and deployment
 
@@ -550,10 +557,14 @@ Server and client versions advance independently. The server publishes canonical
 Container deployment notes:
 
 - The current production image contract supports `linux/amd64` only. The ClamAV dependency and formal build both declare that architecture; unverified compatibility architectures are not promised.
-- Use `docker-compose.yml` as the production deployment template and replace the image owner, database password, issuer URL and OAuth redirect URI allow-list
+- Use `docker-compose.yml` as the production deployment template and set independently generated
+  migration, public, Admin Web, and Worker database passwords, plus the image coordinate, issuer URL,
+  and OAuth redirect URI allow-list
 - Place the issuance PEM at the compose secret path. The default example is `./secrets/entitlement-es256-private.pem`
 - Local file-backed Compose secrets preserve host ownership. The application image runs as `10001:10001`, so every private secret file must be owned by `10001:10001` with mode `0400`; restrict the `secrets/` directory to the deployment account with mode `0700`. Never work around a permissions failure by making secrets globally readable with mode `0444`
-- PostgreSQL uses `postgres:18-alpine` pinned to an immutable digest, with data mounted at `/var/lib/postgresql`
+- PostgreSQL uses `postgres:18-alpine` pinned to an immutable digest, with data mounted at
+  `/var/lib/postgresql`; its first-start hook creates only the three unprivileged runtime logins, and
+  the migration command applies the explicit per-table grants
 - The service example binds only to localhost; production ingress should terminate HTTPS through a reverse proxy
 - `docker-compose.yml` explicitly disables application-startup migrations; run a controlled one-shot migration before starting or rolling the service
 - Use `GET /healthz` and `GET /readyz` after startup. Inside the container, run `camellia-nexus-management-server healthcheck http://127.0.0.1:<port>/readyz`. Give SIGTERM at least a 30-second stop window.

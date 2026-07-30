@@ -13,7 +13,7 @@ server-side authorization.
 | --- | --- |
 | Rust unit and service tests | Parsing, cryptography, state transitions, permissions, idempotency, pagination, errors, and bounded behavior |
 | PostgreSQL integration | Transactions, row versions, trusted time, replica-safe rate limits, migrations, concurrency, jobs, and persistence |
-| Deployment contracts | Four-role systemd ordering/hardening, private per-role metrics, and production configuration failure modes |
+| Deployment contracts | Four distinct OS and database identities, systemd ordering/hardening, private per-role metrics, denied public access to Admin data/DDL, and production configuration failure modes |
 | Admin UI deterministic browser tests | Themes, localization, responsive/overflow states, dialogs, keyboard/focus, errors, PWA installation metadata, and interactions across fixed fixtures |
 | Final-container runtime | Image metadata, migrations, CLI mutations, public and Admin roles, PWA/static headers, hardening, readiness, worker startup, real authentication, Team operations, and logout |
 | Live Admin UI | The static UI embedded in the final image performs real authentication/step-up, account/license/code/Team/billing/bulk/support mutations, conflict recovery, audit/system checks, credential maintenance, accessibility/responsive checks, and logout |
@@ -45,9 +45,11 @@ Chromium installation:
 CAMELLIA_NEXUS_RUN_ADMIN_UI_LIVE=1 scripts/test-container-runtime.sh <locally-loaded-image>
 ```
 
-The runtime test creates an isolated PostgreSQL database, enrollment factors and sessions, accounts,
-Team licenses, one-time deliveries, billing fixtures, a synthetic PDF, a pinned ClamAV scanner, worker,
-and hardened runtime containers. A disposable pre-expired browser session proves the real step-up
+The runtime test creates an isolated PostgreSQL database with a schema owner plus three
+least-privilege runtime logins, enrollment factors and sessions, accounts, Team licenses, one-time
+deliveries, billing fixtures, a synthetic PDF, a pinned ClamAV scanner, worker, and hardened runtime
+containers. It proves the public login cannot read Admin identities or create schema objects and the
+Worker cannot read password credentials. A disposable pre-expired browser session proves the real step-up
 dialog and retry retain one operation identity. The live browser also proves one-time secret
 destruction, optimistic concurrency, evidence scanning and payment approval, bounded bulk work,
 restricted support permissions, audit/system views, password rotation, session revocation, and logout.

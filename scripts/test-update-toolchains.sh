@@ -10,7 +10,8 @@ repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fixture="$(mktemp -d "${TMPDIR:-/tmp}/camellia-toolchains-test.XXXXXX")"
 trap 'rm -rf "$fixture"' EXIT
 
-mkdir -p "$fixture/admin-ui" "$fixture/scripts" "$fixture/docs" "$fixture/.github"
+mkdir -p "$fixture/admin-ui" "$fixture/scripts" "$fixture/docs" "$fixture/.github" \
+  "$fixture/deploy/postgres" "$fixture/src"
 cp "$repository_root/.dockerignore" "$repository_root/.node-version" \
   "$repository_root/Cargo.toml" "$repository_root/rust-toolchain.toml" \
   "$repository_root/Dockerfile" "$repository_root/docker-compose.yml" "$fixture/"
@@ -19,6 +20,9 @@ cp "$repository_root/admin-ui/package.json" "$repository_root/admin-ui/pnpm-work
 cp "$repository_root/scripts/check-version-policy.sh" "$repository_root/scripts/update-toolchains.sh" "$fixture/scripts/"
 cp "$repository_root/scripts/build-e2e-bundle.sh" "$repository_root/scripts/provision-e2e-compose.sh" "$fixture/scripts/"
 cp "$repository_root/docs/dependency-management.md" "$fixture/docs/"
+cp "$repository_root/deploy/"*.env.example "$fixture/deploy/"
+cp "$repository_root/deploy/postgres/init-runtime-roles.sh" "$fixture/deploy/postgres/"
+cp "$repository_root/src/admin_jobs.rs" "$repository_root/src/main.rs" "$fixture/src/"
 cp -R "$repository_root/.github/workflows" "$fixture/.github/"
 cp "$repository_root/.github/dependabot.yml" "$fixture/.github/"
 chmod +x "$fixture/scripts/update-toolchains.sh"
@@ -98,6 +102,19 @@ git -C "$fixture" reset -q --hard HEAD
 sed -i 's/zizmor==1.28.0/zizmor==1.27.0/' "$fixture/.github/workflows/ci.yml"
 if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
   fail 'an unreviewed workflow security scanner version was accepted'
+fi
+
+git -C "$fixture" reset -q --hard HEAD
+sed -i '/CAMELLIA_NEXUS_DATABASE_PUBLIC_PASSWORD/d' "$fixture/docker-compose.yml"
+if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
+  fail 'a shared or missing public database credential boundary was accepted'
+fi
+
+git -C "$fixture" reset -q --hard HEAD
+sed -i 's/lease_generation = lease_generation + 1/lease_generation = lease_generation/' \
+  "$fixture/src/admin_jobs.rs"
+if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
+  fail 'a non-fencing bulk-job lease was accepted'
 fi
 
 printf '%s\n' 'Toolchain updater tests passed.'

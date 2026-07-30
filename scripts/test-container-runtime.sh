@@ -53,10 +53,23 @@ trap cleanup EXIT HUP INT TERM
 
 docker image inspect "$image" >/dev/null
 docker network create "$network" >/dev/null
+database_name=nexus
+migrate_role=nexus_migrate
+public_role=nexus_public
+admin_web_role=nexus_admin_web
+admin_worker_role=nexus_admin_worker
+migrate_password='migrate.runtime.smoke.0123456789ABC'
+public_password='public.runtime.smoke.0123456789ABCD'
+admin_web_password='admin.web.runtime.smoke.0123456789'
+admin_worker_password='admin.worker.runtime.smoke.0123456'
+migrate_database_url="postgres://$migrate_role:$migrate_password@postgres:5432/$database_name"
+public_database_url="postgres://$public_role:$public_password@postgres:5432/$database_name"
+admin_web_database_url="postgres://$admin_web_role:$admin_web_password@postgres:5432/$database_name"
+admin_worker_database_url="postgres://$admin_worker_role:$admin_worker_password@postgres:5432/$database_name"
 docker run --detach --name "$postgres" --network "$network" --network-alias postgres \
-  --env POSTGRES_DB=camellia_license \
-  --env POSTGRES_USER=camellia \
-  --env POSTGRES_PASSWORD=container-smoke-only \
+  --env "POSTGRES_DB=$database_name" \
+  --env "POSTGRES_USER=$migrate_role" \
+  --env "POSTGRES_PASSWORD=$migrate_password" \
   postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15 \
   >/dev/null
 
@@ -65,14 +78,23 @@ for _ in {1..30}; do
   # replaces PID 1 with the final database process. Do not accept that
   # transitional ready state: it is immediately followed by a clean shutdown.
   if docker exec "$postgres" sh -ec \
-      'test "$(cat /proc/1/comm)" = postgres && pg_isready --username camellia --dbname camellia_license' \
+      "test \"\$(cat /proc/1/comm)\" = postgres && pg_isready --username $migrate_role --dbname $database_name" \
       >/dev/null 2>&1; then
     break
   fi
   sleep 1
 done
 docker exec "$postgres" sh -ec \
-  'test "$(cat /proc/1/comm)" = postgres && pg_isready --username camellia --dbname camellia_license' \
+  "test \"\$(cat /proc/1/comm)\" = postgres && pg_isready --username $migrate_role --dbname $database_name" \
+  >/dev/null
+docker exec "$postgres" psql --username "$migrate_role" --dbname "$database_name" \
+  --set ON_ERROR_STOP=1 \
+  --set public_role="$public_role" --set public_password="$public_password" \
+  --set admin_web_role="$admin_web_role" --set admin_web_password="$admin_web_password" \
+  --set admin_worker_role="$admin_worker_role" --set admin_worker_password="$admin_worker_password" \
+  --command "SELECT format('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS', :'public_role', :'public_password') \\gexec" \
+  --command "SELECT format('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS', :'admin_web_role', :'admin_web_password') \\gexec" \
+  --command "SELECT format('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS', :'admin_worker_role', :'admin_worker_password') \\gexec" \
   >/dev/null
 
 if [[ "$run_live_admin_ui" == 1 ]]; then
@@ -102,7 +124,6 @@ common=(
   --network "$network"
   --env CAMELLIA_NEXUS_LICENSE_ENV=production
   --env CAMELLIA_NEXUS_LICENSE_STORAGE=postgres
-  --env DATABASE_URL=postgres://camellia:container-smoke-only@postgres:5432/camellia_license
   --env CAMELLIA_NEXUS_LICENSE_ISSUER=https://license.invalid.example
   --env CAMELLIA_NEXUS_LICENSE_AUDIENCE=camellia-nexus-desktop
   --env CAMELLIA_NEXUS_LICENSE_KEY_ID=entitlement-container-smoke
@@ -190,7 +211,50 @@ admin_post() {
   fi
 }
 
-docker run --rm "${common[@]}" "${runtime_security[@]}" "$image" migrate
+docker run --rm "${common[@]}" "${runtime_security[@]}" \
+  --env "DATABASE_URL=$migrate_database_url" \
+  --env "CAMELLIA_NEXUS_DATABASE_PUBLIC_ROLE=$public_role" \
+  --env "CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_ROLE=$admin_web_role" \
+  --env "CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_ROLE=$admin_worker_role" \
+  "$image" migrate
+
+echo "==> Verify database trust boundaries"
+docker exec --env "PGPASSWORD=$public_password" "$postgres" \
+  psql --host 127.0.0.1 --username "$public_role" --dbname "$database_name" \
+  --set ON_ERROR_STOP=1 --command 'SELECT count(*) FROM accounts' >/dev/null
+if docker exec --env "PGPASSWORD=$public_password" "$postgres" \
+  psql --host 127.0.0.1 --username "$public_role" --dbname "$database_name" \
+  --set ON_ERROR_STOP=1 --command 'SELECT count(*) FROM admin_users' >/dev/null 2>&1; then
+  echo 'public database role can read administrator identities' >&2
+  exit 1
+fi
+if docker exec --env "PGPASSWORD=$public_password" "$postgres" \
+  psql --host 127.0.0.1 --username "$public_role" --dbname "$database_name" \
+  --set ON_ERROR_STOP=1 --command 'CREATE TABLE public.public_role_escape(id integer)' \
+  >/dev/null 2>&1; then
+  echo 'public database role can create schema objects' >&2
+  exit 1
+fi
+docker exec --env "PGPASSWORD=$admin_worker_password" "$postgres" \
+  psql --host 127.0.0.1 --username "$admin_worker_role" --dbname "$database_name" \
+  --set ON_ERROR_STOP=1 --command 'SELECT count(*) FROM admin_bulk_jobs' >/dev/null
+if docker exec --env "PGPASSWORD=$admin_worker_password" "$postgres" \
+  psql --host 127.0.0.1 --username "$admin_worker_role" --dbname "$database_name" \
+  --set ON_ERROR_STOP=1 --command 'SELECT count(*) FROM admin_password_credentials' \
+  >/dev/null 2>&1; then
+  echo 'Admin Worker database role can read password credentials' >&2
+  exit 1
+fi
+if docker exec --env "PGPASSWORD=$admin_worker_password" "$postgres" \
+  psql --host 127.0.0.1 --username "$admin_worker_role" --dbname "$database_name" \
+  --set ON_ERROR_STOP=1 \
+  --command "INSERT INTO admin_users
+    (id, username, display_name, status, created_at, updated_at)
+    VALUES ('worker_escape', 'worker-escape', 'Worker escape', 'active', 1, 1)" \
+  >/dev/null 2>&1; then
+  echo 'Admin Worker database role can create administrator identities' >&2
+  exit 1
+fi
 
 resource_suffix="${suffix//-/}"
 account_id="acct_runtime_${resource_suffix}"
@@ -199,7 +263,8 @@ operator_id="container_runtime_smoke"
 reason="candidate image runtime verification"
 
 run_admin() {
-  docker run --rm "${common[@]}" "${runtime_security[@]}" "$image" admin --raw "$@"
+  docker run --rm "${common[@]}" "${runtime_security[@]}" \
+    --env "DATABASE_URL=$admin_web_database_url" "$image" admin --raw "$@"
 }
 
 echo "==> Verify container account and Team license mutations"
@@ -226,6 +291,7 @@ test "$(grep -Foc "\"order_id\": \"$code_operation:1\"" <<<"$codes")" -eq 1
 
 echo "==> Verify first administrator bootstrap"
 owner="$(docker run --rm "${common[@]}" "${runtime_security[@]}" \
+  --env "DATABASE_URL=$admin_web_database_url" \
   --env CAMELLIA_NEXUS_ADMIN_KEYRING_PATH=/run/secrets/admin-keyring.json \
   --volume "$temporary_directory/admin-keyring.json:/run/secrets/admin-keyring.json:ro" \
   "$image" admin --raw operator bootstrap runtimeowner --display-name 'Runtime Owner' \
@@ -235,6 +301,7 @@ unset account license issued replay_error codes
 
 echo "==> Verify public and administration runtime roles"
 docker run --detach --name "$public" "${common[@]}" "${runtime_security[@]}" \
+  --env "DATABASE_URL=$public_database_url" \
   --env CAMELLIA_NEXUS_LICENSE_BIND=0.0.0.0:8088 \
   "$image" serve >/dev/null
 
@@ -250,6 +317,7 @@ docker exec "$public" camellia-nexus-management-server healthcheck \
 
 admin_common=(
   "${common[@]}"
+  --env "DATABASE_URL=$admin_web_database_url"
   --env CAMELLIA_NEXUS_ADMIN_BIND=0.0.0.0:8090
   --env CAMELLIA_NEXUS_ADMIN_PUBLIC_ORIGIN=https://admin.invalid.example
   --env CAMELLIA_NEXUS_ADMIN_KEYRING_PATH=/run/secrets/admin-keyring.json
@@ -581,8 +649,8 @@ print(json.dumps({"username": "runtimebrowser", "password": password, "totp": to
     'camellia_admin_development')"
   live_csrf_cookie="$(cookie_pair "$temporary_directory/live-login.headers" \
     'camellia_admin_csrf_development')"
-  expired_sessions="$(docker exec "$postgres" psql --username camellia \
-    --dbname camellia_license --tuples-only --no-align --set ON_ERROR_STOP=1 \
+  expired_sessions="$(docker exec "$postgres" psql --username "$migrate_role" \
+    --dbname "$database_name" --tuples-only --no-align --set ON_ERROR_STOP=1 \
     --command "WITH expired AS (UPDATE admin_sessions SET elevated_until = 0 WHERE user_id = (SELECT id FROM admin_users WHERE username = 'runtimebrowser') RETURNING 1) SELECT count(*) FROM expired;")"
   [[ "$expired_sessions" =~ ^[1-9][0-9]*$ ]]
   CAMELLIA_NEXUS_ADMIN_E2E_BASE_URL="$live_admin_origin" \
@@ -612,6 +680,7 @@ unset live_login_counter live_login_totp live_login_body live_session_cookie liv
 unset expired_sessions
 
 docker run --detach --name "$worker" "${admin_common[@]}" "${runtime_security[@]}" \
+  --env "DATABASE_URL=$admin_worker_database_url" \
   "$image" admin-worker >/dev/null
 sleep 2
 test "$(docker inspect --format '{{.State.Running}}' "$worker")" = true
