@@ -19,8 +19,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use zeroize::Zeroize;
 
 use crate::{
-    admin_app::{AdminAppError, AdminApplication},
-    admin_auth::{AdminAuthError, AdminKeyring},
+    admin_app::{AdminAppError, AdminApplication, MutationContext},
+    admin_auth::{AdminAuthError, AdminKeyring, AdminPermission, authorize_admin_mutation},
     crypto::{random_id, random_secret, sha256_hex},
     error::ApiError,
     store::PostgresRepository,
@@ -314,19 +314,32 @@ impl SecretDeliveryService {
         &self,
         id: &str,
         claim_token: &str,
-        actor_id: &str,
-        session_id: &str,
+        context: &MutationContext,
+        permission: AdminPermission,
         now: i64,
     ) -> ObjectStorageResult<ClaimedSecret> {
+        let session_id = context
+            .principal
+            .session_id
+            .as_deref()
+            .ok_or(AdminAuthError::PermissionDenied)?;
+        let mut tx = self
+            .repository
+            .pool
+            .begin()
+            .await
+            .map_err(|_| ApiError::Database)?;
+        authorize_admin_mutation(&mut tx, context, permission, false, now).await?;
         let row = sqlx::query(
             "SELECT purpose, key_id, nonce, ciphertext, claim_token_hash, expires_at, acknowledged_at
              FROM admin_secret_deliveries
-             WHERE id = $1 AND actor_id = $2 AND session_id = $3",
+             WHERE id = $1 AND actor_id = $2 AND session_id = $3
+             FOR UPDATE",
         )
         .bind(id)
-        .bind(actor_id)
+        .bind(&context.principal.id)
         .bind(session_id)
-        .fetch_optional(&self.repository.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|_| ApiError::Database)?
         .ok_or(ObjectStorageError::NotFound)?;
@@ -360,9 +373,10 @@ impl SecretDeliveryService {
         )
         .bind(id)
         .bind(now)
-        .execute(&self.repository.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|_| ApiError::Database)?;
+        tx.commit().await.map_err(|_| ApiError::Database)?;
         Ok(ClaimedSecret {
             purpose: row.try_get("purpose").map_err(|_| ApiError::Database)?,
             plaintext,
@@ -373,10 +387,22 @@ impl SecretDeliveryService {
         &self,
         id: &str,
         claim_token: &str,
-        actor_id: &str,
-        session_id: &str,
+        context: &MutationContext,
+        permission: AdminPermission,
         now: i64,
     ) -> ObjectStorageResult<()> {
+        let session_id = context
+            .principal
+            .session_id
+            .as_deref()
+            .ok_or(AdminAuthError::PermissionDenied)?;
+        let mut tx = self
+            .repository
+            .pool
+            .begin()
+            .await
+            .map_err(|_| ApiError::Database)?;
+        authorize_admin_mutation(&mut tx, context, permission, false, now).await?;
         let updated = sqlx::query(
             "UPDATE admin_secret_deliveries
              SET acknowledged_at = $5, key_id = '', nonce = ''::bytea, ciphertext = ''::bytea
@@ -384,15 +410,16 @@ impl SecretDeliveryService {
                AND claim_token_hash = $4 AND acknowledged_at IS NULL AND expires_at > $5",
         )
         .bind(id)
-        .bind(actor_id)
+        .bind(&context.principal.id)
         .bind(session_id)
         .bind(sha256_hex(claim_token))
         .bind(now)
-        .execute(&self.repository.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|_| ApiError::Database)?
         .rows_affected();
         if updated == 1 {
+            tx.commit().await.map_err(|_| ApiError::Database)?;
             return Ok(());
         }
         let acknowledged: bool = sqlx::query_scalar(
@@ -403,13 +430,14 @@ impl SecretDeliveryService {
              )",
         )
         .bind(id)
-        .bind(actor_id)
+        .bind(&context.principal.id)
         .bind(session_id)
         .bind(sha256_hex(claim_token))
-        .fetch_one(&self.repository.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(|_| ApiError::Database)?;
         if acknowledged {
+            tx.commit().await.map_err(|_| ApiError::Database)?;
             Ok(())
         } else {
             Err(ObjectStorageError::NotFound)

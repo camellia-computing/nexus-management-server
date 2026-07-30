@@ -190,7 +190,9 @@ addresses, customer data, credentials, or machine-local procedures here.
   token can be replaced; replacement invalidates every earlier enrollment token.
 - Administrator roles/permissions are explicit. Mutations require the documented permission, reason,
   persisted idempotency key, and `If-Match` row version where applicable. Self-disable, self-reset, and
-  removal of the final active Platform Owner fail closed.
+  removal of the final active Platform Owner fail closed. The committing transaction locks and
+  rechecks the active identity, session, credential epoch, role, exact permission, and step-up state
+  where required; background jobs repeat the role and permission check for every item.
 - Enrollment tokens, activation-code batches, invitation tokens, and other one-display material use
   encrypted, session-bound, expiring secret deliveries and are erased after acknowledgement. Ordinary
   resource records never contain the plaintext.

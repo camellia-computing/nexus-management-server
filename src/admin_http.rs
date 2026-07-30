@@ -45,7 +45,7 @@ use crate::{
     },
     admin_auth::{
         AdminAuthError, AdminAuthService, AdminKeyring, AdminPermission, AdminRole, AdminUser,
-        AuthenticatedAdmin, SessionCredentials,
+        AuthenticatedAdmin, SessionCredentials, authorize_admin_mutation,
     },
     admin_contracts::{
         AdminAccount, AdminActivationCode, AdminAuditEvent, AdminDashboard, AdminDevice,
@@ -54,7 +54,7 @@ use crate::{
         AdminTeamWorkspace,
     },
     admin_identity::{AdminIdentityService, NewAdminUser, UpdateAdminUser},
-    admin_jobs::{AdminJobError, AdminJobService, BulkJobKind, CreatePreview},
+    admin_jobs::{AdminJobError, AdminJobService, CreatePreview, required_admin_permission},
     admin_operation,
     admin_storage::{
         EvidenceScanner, ObjectStorageConfig, ObjectStorageError, ObjectStorageService,
@@ -663,6 +663,10 @@ impl IntoResponse for AdminHttpError {
                 (StatusCode::TOO_MANY_REQUESTS, "admin_rate_limited")
             }
             Self::Auth(AdminAuthError::StepUpRequired) => {
+                (StatusCode::FORBIDDEN, "admin_step_up_required")
+            }
+            Self::Application(AdminAppError::StepUpRequired)
+            | Self::Job(AdminJobError::Application(AdminAppError::StepUpRequired)) => {
                 (StatusCode::FORBIDDEN, "admin_step_up_required")
             }
             Self::Auth(AdminAuthError::PermissionDenied)
@@ -1610,23 +1614,32 @@ async fn claim_secret_delivery(
     Json(input): Json<SecretDeliveryInput>,
 ) -> Result<Json<Value>, AdminHttpError> {
     let admin = authenticate_csrf(&state, &headers).await?;
-    let claimed = state
+    let now = state.application.trusted_now().await?;
+    let purpose = state
         .secret_deliveries
-        .claim(
+        .acknowledgement_purpose(
             &id,
             &input.claim_token,
             &admin.user.id,
             &admin.session_id,
-            state.application.trusted_now().await?,
+            now,
         )
         .await?;
-    let permission = match claimed.purpose.as_str() {
+    let permission = match purpose.as_str() {
         "activation_code_batch" => AdminPermission::CodeIssue,
         "team_invitation" => AdminPermission::TeamWrite,
         "admin_enrollment" => AdminPermission::IdentityManage,
         _ => return Err(AdminHttpError::NotFound),
     };
     admin.user.require(permission)?;
+    let context = session_context(&state, &admin, &headers, "claim one-time secret delivery")?;
+    let claimed = state
+        .secret_deliveries
+        .claim(&id, &input.claim_token, &context, permission, now)
+        .await?;
+    if claimed.purpose != purpose {
+        return Err(AdminHttpError::NotFound);
+    }
     Ok(Json(serde_json::from_slice(&claimed.plaintext)?))
 }
 
@@ -1655,15 +1668,15 @@ async fn acknowledge_secret_delivery(
         _ => return Err(AdminHttpError::NotFound),
     };
     admin.user.require(permission)?;
+    let context = session_context(
+        &state,
+        &admin,
+        &headers,
+        "acknowledge one-time secret delivery",
+    )?;
     state
         .secret_deliveries
-        .acknowledge(
-            &id,
-            &input.claim_token,
-            &admin.user.id,
-            &admin.session_id,
-            now,
-        )
+        .acknowledge(&id, &input.claim_token, &context, permission, now)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1819,7 +1832,10 @@ async fn create_bulk_preview(
     let admin = authenticate_csrf(&state, &headers).await?;
     admin.user.require(AdminPermission::JobManage)?;
     require_bulk_permission(&admin, &input)?;
-    let preview = state.jobs.create_preview(&admin.user.id, input).await?;
+    let preview = state
+        .jobs
+        .create_preview(&admin.user.id, &admin.session_id, input)
+        .await?;
     Ok((StatusCode::CREATED, Json(serde_json::to_value(preview)?)))
 }
 
@@ -1990,7 +2006,13 @@ async fn create_billing_offer(
     let offer = state
         .application
         .repository()
-        .create_commercial_offer(&offer, &admin.user.id, &context.reason, operation.as_ref())
+        .create_commercial_offer(
+            &offer,
+            &admin.user.id,
+            &context.reason,
+            operation.as_ref(),
+            Some(&context),
+        )
         .await?;
     Ok((StatusCode::CREATED, Json(serde_json::to_value(offer)?)))
 }
@@ -2077,7 +2099,13 @@ async fn create_payment_method(
     let method = state
         .application
         .repository()
-        .create_manual_payment_method(&method, &admin.user.id, &context.reason, operation.as_ref())
+        .create_manual_payment_method(
+            &method,
+            &admin.user.id,
+            &context.reason,
+            operation.as_ref(),
+            Some(&context),
+        )
         .await?;
     Ok((StatusCode::CREATED, Json(serde_json::to_value(method)?)))
 }
@@ -2086,6 +2114,8 @@ async fn create_payment_method(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct InvoiceQuery {
     account_id: Option<String>,
+    #[serde(flatten)]
+    page: PageRequest,
 }
 
 async fn invoices(
@@ -2101,9 +2131,8 @@ async fn invoices(
         state
             .application
             .repository()
-            .billing_invoices(query.account_id.as_deref())
-            .await
-            .map_err(AdminAppError::from)?,
+            .billing_invoices(query.account_id.as_deref(), query.page)
+            .await?,
     )?))
 }
 
@@ -2179,6 +2208,7 @@ async fn create_invoice(
             &context.reason,
             now,
             operation.as_ref(),
+            Some(&context),
         )
         .await
         .map_err(create_invoice_error)?;
@@ -2189,6 +2219,8 @@ async fn create_invoice(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PaymentClaimQuery {
     status: Option<PaymentClaimStatus>,
+    #[serde(flatten)]
+    page: PageRequest,
 }
 
 async fn payment_claims(
@@ -2204,9 +2236,8 @@ async fn payment_claims(
         state
             .application
             .repository()
-            .manual_payment_claims(query.status)
-            .await
-            .map_err(AdminAppError::from)?,
+            .manual_payment_claims(query.status, query.page)
+            .await?,
     )?))
 }
 
@@ -2257,7 +2288,11 @@ async fn review_payment_claim(
         admin.user.require(AdminPermission::BillingOverride)?;
         admin.require_step_up(state.application.trusted_now().await?)?;
     }
-    let operation_id = required_idempotency_key(&headers)?;
+    let context = mutation_context(&state, &admin, &headers, input.reason)?;
+    let operation_id = context
+        .operation_id
+        .clone()
+        .ok_or_else(|| AdminHttpError::Invalid("Idempotency-Key header is required".to_owned()))?;
     let expected_row_version = required_if_match(&headers)?;
     if expected_row_version <= 0 {
         return Err(AdminHttpError::Invalid(
@@ -2275,10 +2310,11 @@ async fn review_payment_claim(
             expected_row_version,
             decision,
             &admin.user.id,
-            &input.reason,
+            &context.reason,
             &operation_id,
             input.allow_amount_override,
             now,
+            Some(&context),
         )
         .await?;
     let row_version = i64::try_from(claim.row_version).map_err(|_| AdminHttpError::Database)?;
@@ -2407,6 +2443,7 @@ async fn upload_payment_evidence(
         &context,
     )?
     .ok_or_else(|| AdminHttpError::Invalid("Idempotency-Key header is required".to_owned()))?;
+    let now = state.application.trusted_now().await?;
     if let Some(response) =
         admin_operation::replay::<Value>(&state.application.repository().pool, &operation).await?
     {
@@ -2423,6 +2460,8 @@ async fn upload_payment_evidence(
             .begin()
             .await
             .map_err(|_| AdminHttpError::Database)?;
+        authorize_admin_mutation(&mut tx, &context, AdminPermission::BillingWrite, false, now)
+            .await?;
         let response = match admin_operation::claim_prepared::<Value>(&mut tx, &operation).await? {
             Some(replayed) => replayed,
             None => {
@@ -2445,7 +2484,6 @@ async fn upload_payment_evidence(
             "payment evidence cannot be added after the claim is closed".to_owned(),
         ));
     }
-    let now = state.application.trusted_now().await?;
     let object = state
         .storage
         .put(
@@ -2473,6 +2511,14 @@ async fn upload_payment_evidence(
             .begin()
             .await
             .map_err(|_| AdminHttpError::Database)?;
+        authorize_admin_mutation(
+            &mut tx,
+            &context,
+            AdminPermission::BillingWrite,
+            false,
+            now,
+        )
+        .await?;
         if let Some(response) =
             admin_operation::claim_prepared::<Value>(&mut tx, &operation).await?
         {
@@ -2937,6 +2983,7 @@ async fn create_team_invitation(
         .begin()
         .await
         .map_err(|_| AdminHttpError::Database)?;
+    authorize_admin_mutation(&mut tx, &context, AdminPermission::TeamWrite, false, now).await?;
     if let Some(response) = admin_operation::claim::<TeamInvitationOperationResponse>(
         &mut tx,
         TEAM_INVITATION_OPERATION,
@@ -3223,6 +3270,7 @@ async fn complete_team_owner_profile(
         .begin()
         .await
         .map_err(|_| AdminHttpError::Database)?;
+    authorize_admin_mutation(&mut tx, &context, AdminPermission::TeamWrite, true, now).await?;
     if let Some(response) = admin_operation::claim::<AdminTeamMember>(
         &mut tx,
         TEAM_OWNER_PROFILE_OPERATION,
@@ -3374,6 +3422,7 @@ async fn update_team_member(
         .begin()
         .await
         .map_err(|_| AdminHttpError::Database)?;
+    authorize_admin_mutation(&mut tx, &context, AdminPermission::TeamWrite, false, now).await?;
     if let Some(response) = admin_operation::claim::<Value>(
         &mut tx,
         TEAM_MEMBER_UPDATE_OPERATION,
@@ -3507,6 +3556,7 @@ async fn transfer_team_ownership(
         .begin()
         .await
         .map_err(|_| AdminHttpError::Database)?;
+    authorize_admin_mutation(&mut tx, &context, AdminPermission::TeamWrite, true, now).await?;
     if let Some(response) = admin_operation::claim::<Value>(
         &mut tx,
         TEAM_OWNERSHIP_TRANSFER_OPERATION,
@@ -3638,6 +3688,7 @@ async fn revoke_team_invitation(
         .begin()
         .await
         .map_err(|_| AdminHttpError::Database)?;
+    authorize_admin_mutation(&mut tx, &context, AdminPermission::TeamWrite, false, now).await?;
     if admin_operation::claim::<Value>(
         &mut tx,
         TEAM_INVITATION_REVOKE_OPERATION,
@@ -3704,34 +3755,7 @@ fn require_bulk_permission(
 }
 
 fn bulk_permission(preview: &CreatePreview) -> Result<AdminPermission, AdminHttpError> {
-    let parameter = |name: &str| {
-        preview
-            .parameters
-            .get(name)
-            .and_then(Value::as_str)
-            .ok_or_else(|| AdminHttpError::Invalid(format!("{name} must be a string")))
-    };
-    let permission = match preview.kind {
-        BulkJobKind::AccountSetState => match parameter("state")? {
-            "active" | "suspended" => AdminPermission::AccountWrite,
-            "denylisted" => AdminPermission::AccountDenylist,
-            _ => {
-                return Err(AdminHttpError::Invalid("invalid account state".to_owned()));
-            }
-        },
-        BulkJobKind::LicenseSetStatus => AdminPermission::LicenseWrite,
-        BulkJobKind::ActivationCodeRevoke | BulkJobKind::ActivationCodeExpire => {
-            AdminPermission::CodeWrite
-        }
-        BulkJobKind::DeviceSetState => match parameter("state")? {
-            "removed" => AdminPermission::DeviceRemove,
-            "revoked" | "suspicious" => AdminPermission::DeviceSecurity,
-            _ => {
-                return Err(AdminHttpError::Invalid("invalid device state".to_owned()));
-            }
-        },
-    };
-    Ok(permission)
+    required_admin_permission(preview.kind, &preview.parameters).map_err(Into::into)
 }
 
 async fn system_status(
@@ -3792,7 +3816,18 @@ fn mutation_context(
     headers: &HeaderMap,
     reason: String,
 ) -> Result<MutationContext, AdminHttpError> {
-    let mut context = MutationContext::new(
+    let mut context = session_context(state, admin, headers, reason)?;
+    context.operation_id = Some(required_idempotency_key(headers)?);
+    Ok(context)
+}
+
+fn session_context(
+    state: &AdminHttpState,
+    admin: &AuthenticatedAdmin,
+    headers: &HeaderMap,
+    reason: impl Into<String>,
+) -> Result<MutationContext, AdminHttpError> {
+    Ok(MutationContext::new(
         AdminPrincipal {
             id: admin.user.id.clone(),
             session_id: Some(admin.session_id.clone()),
@@ -3803,9 +3838,7 @@ fn mutation_context(
                 .map(str::to_owned),
         },
         reason,
-    )?;
-    context.operation_id = Some(required_idempotency_key(headers)?);
-    Ok(context)
+    )?)
 }
 
 fn require_same_origin(state: &AdminHttpState, headers: &HeaderMap) -> Result<(), AdminHttpError> {
@@ -4319,6 +4352,7 @@ impl From<Infallible> for AdminHttpError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::admin_jobs::BulkJobKind;
     use tower::ServiceExt;
 
     fn write_admin_asset_fixture(directory: &Path) {

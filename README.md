@@ -141,7 +141,7 @@ docker compose up -d
 
 管理端创建 Team 邀请、更新成员和撤销邀请均在数据库事务内认领幂等键。若创建邀请的响应在网络中丢失，控制台会保留原操作键，重新取得同一条邀请的短期加密交付，而不会重复占用席位或生成第二名成员；修改了请求内容却复用旧操作键会得到冲突响应。
 
-账户、授权、设备、激活码、账单、批量任务取消和付款凭证也使用相同的持久幂等契约：资源变更、审计和公开响应在一个事务内提交，控制台仅在确认收到业务错误后更换操作键。激活码密文交付可由原操作键重新取得；付款凭证还以声明与文件摘要去重，并由 worker 回收崩溃留下的孤立对象。秘密领取本身由会话绑定领取令牌保护，确认操作可安全重复，不要求伪装成有业务幂等键的写操作。
+账户、授权、设备、激活码、账单、批量任务取消和付款凭证也使用相同的持久幂等契约：资源变更、审计和公开响应在一个事务内提交，控制台仅在确认收到业务错误后更换操作键。最终提交事务会锁定并重新验证管理员身份状态、会话、凭据代际、角色和所需权限；并发撤权要么先使写入失败，要么等待该次已获授权的提交结束。批量 Worker 对每个条目执行同样检查。激活码密文交付可由原操作键重新取得；付款凭证还以声明与文件摘要去重，并由 worker 回收崩溃留下的孤立对象。秘密领取本身由会话绑定领取令牌保护，领取与确认也在提交事务内重新验证对应权限。
 
 完成首次引导后，Platform Owner 可在私有控制台的“管理员身份”页面新增、分配角色、禁用和重置控制面身份。新身份在完成一次性令牌登记密码与 TOTP 前保持 `pending`；禁用会立即撤销全部会话并作废未使用的登记令牌；重置会先移除旧密码、TOTP 和恢复码，再签发新的十分钟登记令牌。身份变更必须具备近期二次验证、操作原因、幂等键和 `If-Match` 行版本；服务端拒绝自我禁用、自我重置以及移除最后一名活跃 Platform Owner。
 
@@ -333,7 +333,7 @@ camellia-nexus-management-server admin operator recover-owner owner \
 
 `--confirm` 必须与规范化后的目标用户名完全一致。此命令会使现有认证材料立即失效，每次新令牌只在当前输出中显示；若交付失败，可对尚无认证因子的 `pending` Owner 重新执行，新令牌会立即作废此前令牌。命令应只在受控终端执行并安全交付。
 
-人工账单先从报价快照创建 Invoice，再由用户提交付款信息，最后由运营人员审核。只有 `billing payment approve` 的数据库事务成功后才会更新套餐、期限与 license epoch；`submitted`、`needs_information` 或 `rejected` 均不会授予权益。商业报价仅用于 Pro 与 Team。Invoice 席位必须与报价套餐一致：Team 必须显式指定 3 至 10,000 席，Pro 必须为零；服务端会拒绝矛盾输入，不会静默更正商业数据。
+人工账单先从报价快照创建 Invoice，再由用户提交付款信息，最后由运营人员审核。只有 `billing payment approve` 的数据库事务成功后才会更新套餐、期限与 license epoch；`submitted`、`needs_information` 或 `rejected` 均不会授予权益。商业报价仅用于 Pro 与 Team。Invoice 席位必须与报价套餐一致：Team 必须显式指定 3 至 10,000 席，Pro 必须为零；服务端会拒绝矛盾输入，不会静默更正商业数据。账单和付款声明采用默认 50、最大 100 的不透明键集分页；Admin UI 可继续加载，CLI 返回带 `nextCursor` 的页面并接受 `--cursor`、`--page-size` 与 `--query`。
 
 ```bash
 camellia-nexus-management-server admin billing offer create pro-yearly --plan pro --duration-days 365 --currency USD --amount 99 --name-en "Pro yearly" --name-zh "专业版年付" --actor finance_001 --reason "2026 catalog"
@@ -632,7 +632,7 @@ Administrator sessions have a 30-minute idle limit and a non-renewable eight-hou
 
 Administrative Team invitation creation, member updates and invitation revocation claim their idempotency keys inside the database transaction. If an invitation response is lost in transit, the console retains the original operation key and recovers the same short-lived encrypted delivery without consuming another seat or creating another member. Reusing that key with changed request data returns a conflict.
 
-Accounts, licenses, devices, activation codes, billing records, bulk-job cancellation and payment evidence follow the same persistent operation contract: the resource change, audit record and public response commit atomically, and the console rotates an operation key only after a definite business error. Activation-code deliveries can be reconstructed from the original operation; evidence is additionally deduplicated by claim and digest, while the worker removes objects orphaned by a crash. Secret claim tokens are already session-bound business keys, and acknowledgement is safely repeatable without pretending that a separate idempotency key controls it.
+Accounts, licenses, devices, activation codes, billing records, bulk-job cancellation and payment evidence follow the same persistent operation contract: the resource change, audit record and public response commit atomically, and the console rotates an operation key only after a definite business error. The final commit transaction locks and rechecks administrator status, session, credential epoch, roles, and the exact permission. A concurrent revocation either wins and rejects the write or waits for the already-authorized commit; the bulk worker performs the same check for every item. Activation-code deliveries can be reconstructed from the original operation; evidence is additionally deduplicated by claim and digest, while the worker removes objects orphaned by a crash. Secret claim tokens are session-bound business keys, and both claim and acknowledgement recheck their corresponding permission in the committing transaction.
 
 After bootstrap, Platform Owners manage additional control-plane identities from **Administrators** in the private console. New identities remain `pending` until their one-time enrollment token is delivered through the encrypted secret-delivery flow and they configure a password plus TOTP. Disabling an identity immediately revokes its sessions and outstanding enrollment tokens. Credential reset also removes the old password, TOTP and recovery codes before issuing a new ten-minute enrollment token. Identity mutations require recent step-up authentication, an audit reason, an idempotency key and an `If-Match` row version; self-disable/self-reset and removal of the final active Platform Owner are rejected.
 
@@ -834,7 +834,7 @@ camellia-nexus-management-server admin operator recover-owner owner \
 
 `--confirm` must exactly match the normalized target username. The command immediately invalidates existing authentication material and shows each new reset token only in that invocation. If delivery fails, it may be run again for a pending Owner with no authentication factors; the replacement immediately invalidates every earlier token. Run it only from a controlled terminal and deliver the token securely.
 
-Manual billing creates an invoice from an immutable offer snapshot, accepts customer payment evidence, and then requires an operator review. Only a committed `billing payment approve` transaction changes the plan, term, and license epoch; submitted, needs-information, and rejected claims grant no entitlement. Commercial offers apply only to Pro and Team. Invoice seats must match the offer plan: Team requires an explicit quantity from 3 through 10,000, while Pro requires zero. The service rejects contradictory input instead of silently rewriting commercial data.
+Manual billing creates an invoice from an immutable offer snapshot, accepts customer payment evidence, and then requires an operator review. Only a committed `billing payment approve` transaction changes the plan, term, and license epoch; submitted, needs-information, and rejected claims grant no entitlement. Commercial offers apply only to Pro and Team. Invoice seats must match the offer plan: Team requires an explicit quantity from 3 through 10,000, while Pro requires zero. The service rejects contradictory input instead of silently rewriting commercial data. Invoice and payment-claim lists use opaque keyset pages of 50 by default and 100 at most. The Admin UI loads subsequent pages explicitly; the CLI returns `nextCursor` and accepts `--cursor`, `--page-size`, and `--query`.
 
 ```bash
 camellia-nexus-management-server admin billing offer create pro-yearly --plan pro --duration-days 365 --currency USD --amount 99 --name-en "Pro yearly" --name-zh "专业版年付" --actor finance_001 --reason "2026 catalog"

@@ -1291,6 +1291,10 @@ CREATE INDEX authorization_codes_expiry_idx ON public.authorization_codes USING 
 
 CREATE INDEX billing_invoices_account_status_idx ON public.billing_invoices USING btree (account_id, status, created_at DESC);
 
+CREATE INDEX billing_invoices_account_keyset_idx ON public.billing_invoices USING btree (account_id, created_at DESC, id DESC);
+
+CREATE INDEX billing_invoices_keyset_idx ON public.billing_invoices USING btree (created_at DESC, id DESC);
+
 CREATE INDEX customer_payment_operations_claim_idx ON public.customer_payment_operations USING btree (claim_id) WHERE (claim_id IS NOT NULL);
 
 CREATE INDEX device_challenges_expiry_idx ON public.device_challenges USING btree (expires_at, consumed);
@@ -1317,7 +1321,9 @@ CREATE INDEX licenses_plan_revision_idx ON public.licenses USING btree (plan, pl
 
 CREATE UNIQUE INDEX manual_payment_claims_one_open_per_invoice_idx ON public.manual_payment_claims USING btree (invoice_id) WHERE (status = ANY (ARRAY['submitted'::text, 'under_review'::text, 'needs_information'::text]));
 
-CREATE INDEX manual_payment_claims_review_queue_idx ON public.manual_payment_claims USING btree (status, created_at);
+CREATE INDEX manual_payment_claims_keyset_idx ON public.manual_payment_claims USING btree (created_at DESC, id DESC);
+
+CREATE INDEX manual_payment_claims_review_queue_idx ON public.manual_payment_claims USING btree (status, created_at DESC, id DESC);
 
 CREATE INDEX member_device_enrollments_member_idx ON public.member_device_enrollments USING btree (member_id, created_at DESC, id);
 

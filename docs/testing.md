@@ -73,6 +73,11 @@ post-commit lost response and proves the visible retry sends the same request an
 recovers the original secret. These tests complement, rather than replace, final-container and native
 Windows coverage.
 
+Control-plane PostgreSQL tests also revoke a role after request authentication and prove the final
+business transaction creates neither the resource nor its operation record. Billing integration
+tests traverse opaque invoice cursors across equal-sized pages and search a bounded payment-claim
+page, while browser coverage exercises explicit **Load more** state.
+
 Object-storage fault-injection tests use a fake external backend to commit bytes before returning a
 failed `put`, proving that the staging metadata survives and the worker can authenticate and finalize
 the object. The same fake replaces a valid object with an oversized body and can falsify HEAD/GET

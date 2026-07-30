@@ -1,13 +1,15 @@
 use std::{collections::BTreeMap, str::FromStr};
 
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
 
 use crate::{
-    admin_app::{AdminAppError, AdminAppResult},
+    admin_app::{AdminAppError, AdminAppResult, MutationContext, Page, PageRequest},
+    admin_auth::{AdminPermission, authorize_admin_mutation},
     admin_operation::{self, AdminOperationClaim},
     contracts::Plan,
     crypto::random_id,
@@ -122,6 +124,13 @@ pub struct ManualPaymentClaim {
     pub submitted_at: i64,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BillingCursor {
+    created_at: i64,
+    id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -310,9 +319,21 @@ impl PostgresRepository {
         actor: &str,
         reason: &str,
         operation: Option<&AdminOperationClaim>,
+        context: Option<&MutationContext>,
     ) -> AdminAppResult<CommercialOffer> {
         validate_offer(offer)?;
+        validate_admin_context(context, actor, reason)?;
         let mut tx = self.pool.begin().await.map_err(|_| ApiError::Database)?;
+        if let Some(context) = context {
+            authorize_admin_mutation(
+                &mut tx,
+                context,
+                AdminPermission::BillingWrite,
+                false,
+                offer.created_at,
+            )
+            .await?;
+        }
         if let Some(operation) = operation
             && let Some(response) =
                 admin_operation::claim_prepared::<CommercialOffer>(&mut tx, operation).await?
@@ -382,9 +403,21 @@ impl PostgresRepository {
         actor: &str,
         reason: &str,
         operation: Option<&AdminOperationClaim>,
+        context: Option<&MutationContext>,
     ) -> AdminAppResult<ManualPaymentMethod> {
         validate_method(method)?;
+        validate_admin_context(context, actor, reason)?;
         let mut tx = self.pool.begin().await.map_err(|_| ApiError::Database)?;
+        if let Some(context) = context {
+            authorize_admin_mutation(
+                &mut tx,
+                context,
+                AdminPermission::BillingWrite,
+                false,
+                method.created_at,
+            )
+            .await?;
+        }
         if let Some(operation) = operation
             && let Some(response) =
                 admin_operation::claim_prepared::<ManualPaymentMethod>(&mut tx, operation).await?
@@ -456,8 +489,14 @@ impl PostgresRepository {
         reason: &str,
         now: i64,
         operation: Option<&AdminOperationClaim>,
+        context: Option<&MutationContext>,
     ) -> AdminAppResult<BillingInvoice> {
+        validate_admin_context(context, actor, reason)?;
         let mut tx = self.pool.begin().await.map_err(|_| ApiError::Database)?;
+        if let Some(context) = context {
+            authorize_admin_mutation(&mut tx, context, AdminPermission::BillingWrite, false, now)
+                .await?;
+        }
         if let Some(operation) = operation
             && let Some(response) =
                 admin_operation::claim_prepared::<BillingInvoice>(&mut tx, operation).await?
@@ -521,20 +560,66 @@ impl PostgresRepository {
         Ok(invoice)
     }
 
-    pub async fn billing_invoices(&self, account_id: Option<&str>) -> Result<Vec<BillingInvoice>> {
+    pub async fn billing_invoices(
+        &self,
+        account_id: Option<&str>,
+        request: PageRequest,
+    ) -> AdminAppResult<Page<BillingInvoice>> {
+        let request = request.validate()?;
+        let cursor = request
+            .cursor
+            .as_deref()
+            .map(decode_billing_cursor)
+            .transpose()?;
         let rows = sqlx::query(
             "SELECT id, row_version, account_id, license_id, offer_id, plan, plan_revision, seats,
                     duration_days, currency, amount_due, payment_reference, status, due_at,
                     paid_at, created_at, updated_at
              FROM billing_invoices
-             WHERE $1::TEXT IS NULL OR account_id = $1
-             ORDER BY created_at DESC, id DESC",
+             WHERE ($1::TEXT IS NULL OR account_id = $1)
+               AND (
+                 $2::BIGINT IS NULL
+                 OR (created_at, id) < ($2, $3::TEXT)
+               )
+               AND (
+                 $4::TEXT IS NULL
+                 OR strpos(
+                   lower(concat_ws(' ', id, account_id, license_id, offer_id,
+                                   payment_reference, status, currency)),
+                   lower($4)
+                 ) > 0
+               )
+             ORDER BY created_at DESC, id DESC
+             LIMIT $5",
         )
         .bind(account_id)
+        .bind(cursor.as_ref().map(|cursor| cursor.created_at))
+        .bind(cursor.as_ref().map(|cursor| cursor.id.as_str()))
+        .bind(request.query.as_deref())
+        .bind(i64::from(request.page_size) + 1)
         .fetch_all(&self.pool)
         .await
         .map_err(|_| ApiError::Database)?;
-        rows.into_iter().map(row_invoice).collect()
+        let has_more = rows.len() > request.page_size as usize;
+        let items = rows
+            .into_iter()
+            .take(request.page_size as usize)
+            .map(row_invoice)
+            .collect::<Result<Vec<_>>>()?;
+        let next_cursor = if has_more {
+            items
+                .last()
+                .map(|invoice| {
+                    encode_billing_cursor(&BillingCursor {
+                        created_at: invoice.created_at,
+                        id: invoice.id.clone(),
+                    })
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        Ok(Page { items, next_cursor })
     }
 
     pub async fn submit_manual_payment_claim(
@@ -719,20 +804,64 @@ impl PostgresRepository {
     pub async fn manual_payment_claims(
         &self,
         status: Option<PaymentClaimStatus>,
-    ) -> Result<Vec<ManualPaymentClaim>> {
+        request: PageRequest,
+    ) -> AdminAppResult<Page<ManualPaymentClaim>> {
+        let request = request.validate()?;
+        let cursor = request
+            .cursor
+            .as_deref()
+            .map(decode_billing_cursor)
+            .transpose()?;
         let rows = sqlx::query(
             "SELECT id, row_version, invoice_id, account_id, payment_method_id, external_transaction_id,
                     paid_amount, paid_asset, paid_at, payer_name, note, status, submitted_by,
                     reviewed_by, review_reason, submitted_at, created_at, updated_at
              FROM manual_payment_claims
-             WHERE $1::TEXT IS NULL OR status = $1
-             ORDER BY created_at ASC, id ASC",
+             WHERE ($1::TEXT IS NULL OR status = $1)
+               AND (
+                 $2::BIGINT IS NULL
+                 OR (created_at, id) < ($2, $3::TEXT)
+               )
+               AND (
+                 $4::TEXT IS NULL
+                 OR strpos(
+                   lower(concat_ws(' ', id, invoice_id, account_id, payment_method_id,
+                                   external_transaction_id, paid_asset, payer_name,
+                                   status, submitted_by, reviewed_by)),
+                   lower($4)
+                 ) > 0
+               )
+             ORDER BY created_at DESC, id DESC
+             LIMIT $5",
         )
         .bind(status.map(payment_claim_status_name))
+        .bind(cursor.as_ref().map(|cursor| cursor.created_at))
+        .bind(cursor.as_ref().map(|cursor| cursor.id.as_str()))
+        .bind(request.query.as_deref())
+        .bind(i64::from(request.page_size) + 1)
         .fetch_all(&self.pool)
         .await
         .map_err(|_| ApiError::Database)?;
-        rows.into_iter().map(row_payment_claim).collect()
+        let has_more = rows.len() > request.page_size as usize;
+        let items = rows
+            .into_iter()
+            .take(request.page_size as usize)
+            .map(row_payment_claim)
+            .collect::<Result<Vec<_>>>()?;
+        let next_cursor = if has_more {
+            items
+                .last()
+                .map(|claim| {
+                    encode_billing_cursor(&BillingCursor {
+                        created_at: claim.created_at,
+                        id: claim.id.clone(),
+                    })
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        Ok(Page { items, next_cursor })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -746,6 +875,7 @@ impl PostgresRepository {
         operation_id: &str,
         allow_amount_override: bool,
         now: i64,
+        context: Option<&MutationContext>,
     ) -> AdminAppResult<ManualPaymentClaim> {
         if expected_row_version == 0 {
             return Err(ApiError::InvalidRequest.into());
@@ -754,6 +884,13 @@ impl PostgresRepository {
         let actor = bounded(actor, 256)?;
         let reason = bounded(reason, 1_000)?;
         let operation_id = bounded(operation_id, 128)?;
+        validate_admin_context(context, &actor, &reason)?;
+        if context
+            .and_then(|context| context.operation_id.as_deref())
+            .is_some_and(|value| value != operation_id)
+        {
+            return Err(ApiError::InvalidRequest.into());
+        }
         let request_hash = review_request_hash(
             claim_id,
             expected_row_version,
@@ -770,6 +907,20 @@ impl PostgresRepository {
             &reason,
         )?;
         let mut tx = self.pool.begin().await.map_err(|_| ApiError::Database)?;
+        if let Some(context) = context {
+            authorize_admin_mutation(&mut tx, context, AdminPermission::BillingReview, false, now)
+                .await?;
+            if allow_amount_override {
+                authorize_admin_mutation(
+                    &mut tx,
+                    context,
+                    AdminPermission::BillingOverride,
+                    true,
+                    now,
+                )
+                .await?;
+            }
+        }
         if let Some(response) =
             admin_operation::claim_prepared::<ManualPaymentClaim>(&mut tx, &operation).await?
         {
@@ -853,6 +1004,50 @@ fn validate_invoice_seats(plan: Plan, seats: u32) -> AdminAppResult<()> {
             Plan::Free | Plan::Pro => "Non-Team invoice seats must be zero".to_owned(),
         })
     })
+}
+
+fn encode_billing_cursor(cursor: &BillingCursor) -> AdminAppResult<String> {
+    Ok(URL_SAFE_NO_PAD.encode(serde_json::to_vec(cursor)?))
+}
+
+fn decode_billing_cursor(value: &str) -> AdminAppResult<BillingCursor> {
+    if value.is_empty() || value.len() > 512 {
+        return Err(AdminAppError::Validation(
+            "billing cursor is invalid".to_owned(),
+        ));
+    }
+    let bytes = URL_SAFE_NO_PAD
+        .decode(value)
+        .map_err(|_| AdminAppError::Validation("billing cursor is invalid".to_owned()))?;
+    let cursor: BillingCursor = serde_json::from_slice(&bytes)
+        .map_err(|_| AdminAppError::Validation("billing cursor is invalid".to_owned()))?;
+    if cursor.created_at < 0
+        || cursor.id.is_empty()
+        || cursor.id.len() > 128
+        || !cursor
+            .id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+        || encode_billing_cursor(&cursor)? != value
+    {
+        return Err(AdminAppError::Validation(
+            "billing cursor is invalid".to_owned(),
+        ));
+    }
+    Ok(cursor)
+}
+
+fn validate_admin_context(
+    context: Option<&MutationContext>,
+    actor: &str,
+    reason: &str,
+) -> AdminAppResult<()> {
+    if context.is_some_and(|context| {
+        context.principal.id != actor.trim() || context.reason != reason.trim()
+    }) {
+        return Err(ApiError::InvalidRequest.into());
+    }
+    Ok(())
 }
 
 fn validate_offer(offer: &CommercialOffer) -> Result<()> {
@@ -1802,6 +1997,28 @@ mod tests {
     }
 
     #[test]
+    fn billing_cursor_is_canonical_bounded_and_tie_safe() {
+        let cursor = BillingCursor {
+            created_at: 1_785_376_419,
+            id: "invoice_same_second_b".to_owned(),
+        };
+        let encoded = encode_billing_cursor(&cursor).expect("encode billing cursor");
+        assert_eq!(
+            decode_billing_cursor(&encoded).expect("decode billing cursor"),
+            cursor
+        );
+        for invalid in [
+            "",
+            "not-base64!",
+            &URL_SAFE_NO_PAD.encode(br#"{"createdAt":-1,"id":"invoice"}"#),
+            &URL_SAFE_NO_PAD.encode(br#"{"createdAt":1,"id":"invalid id"}"#),
+            &format!("{encoded}="),
+        ] {
+            assert!(decode_billing_cursor(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
     fn invoice_seats_reject_ambiguous_plan_quantities() {
         assert!(validate_invoice_seats(Plan::Pro, 0).is_ok());
         assert!(validate_invoice_seats(Plan::Team, TEAM_MINIMUM_SEATS).is_ok());
@@ -2215,6 +2432,7 @@ mod tests {
                 &information_operation_id,
                 false,
                 now + 123,
+                None,
             )
             .await
             .expect("request payment information");
@@ -2233,6 +2451,7 @@ mod tests {
                 &information_operation_id,
                 false,
                 now + 124,
+                None,
             )
             .await
             .expect("replay information request");
@@ -2248,6 +2467,7 @@ mod tests {
                     &uuid::Uuid::new_v4().to_string(),
                     false,
                     now + 125,
+                    None,
                 )
                 .await,
             Err(AdminAppError::VersionConflict)
@@ -2308,6 +2528,7 @@ mod tests {
                 &approval_operation_id,
                 false,
                 now + 127,
+                None,
             )
             .await
             .expect("approve payment");
@@ -2320,6 +2541,50 @@ mod tests {
                 .await
                 .expect("load paid invoice version");
         assert_eq!(invoice_state, ("paid".to_owned(), 2));
+
+        let invoice_page = repository
+            .billing_invoices(
+                Some(&account_id),
+                PageRequest {
+                    page_size: 1,
+                    ..PageRequest::default()
+                },
+            )
+            .await
+            .expect("load first bounded invoice page");
+        assert_eq!(invoice_page.items.len(), 1);
+        let invoice_cursor = invoice_page
+            .next_cursor
+            .clone()
+            .expect("first invoice page cursor");
+        let next_invoice_page = repository
+            .billing_invoices(
+                Some(&account_id),
+                PageRequest {
+                    cursor: Some(invoice_cursor),
+                    page_size: 1,
+                    ..PageRequest::default()
+                },
+            )
+            .await
+            .expect("load next bounded invoice page");
+        assert_eq!(next_invoice_page.items.len(), 1);
+        assert_ne!(invoice_page.items[0].id, next_invoice_page.items[0].id);
+        assert!(next_invoice_page.next_cursor.is_none());
+
+        let claim_page = repository
+            .manual_payment_claims(
+                Some(PaymentClaimStatus::Verified),
+                PageRequest {
+                    query: Some(external_transaction_id),
+                    page_size: 1,
+                    ..PageRequest::default()
+                },
+            )
+            .await
+            .expect("search bounded payment-claim page");
+        assert_eq!(claim_page.items, vec![approved.clone()]);
+        assert!(claim_page.next_cursor.is_none());
 
         let claim_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM manual_payment_claims WHERE account_id = $1")

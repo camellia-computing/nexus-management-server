@@ -18,7 +18,7 @@ use crate::{
     admin_app::{
         AdminAppError, AdminApplication, AdminPrincipal, MutationContext, Page, PageRequest,
     },
-    admin_auth::AdminKeyring,
+    admin_auth::{AdminKeyring, AdminPermission, authorize_admin_mutation},
     admin_operation,
     admin_storage::{
         EvidenceScanner, ObjectStorageConfig, ObjectStorageError, ObjectStorageService,
@@ -189,6 +189,7 @@ impl AdminJobService {
     pub async fn create_preview(
         &self,
         actor_id: &str,
+        session_id: &str,
         request: CreatePreview,
     ) -> AdminJobResult<BulkPreview> {
         validate_parameters(request.kind, &request.parameters)?;
@@ -224,6 +225,34 @@ impl AdminJobService {
             "targets": preview.targets,
         }))
         .map_err(|_| ApiError::Internal)?;
+        let context = MutationContext::new(
+            AdminPrincipal {
+                id: actor_id.to_owned(),
+                session_id: Some(session_id.to_owned()),
+                source_ip: None,
+                user_agent_hash: None,
+                request_id: None,
+            },
+            "create bulk-operation preview",
+        )?;
+        let mut tx = self
+            .repository
+            .pool
+            .begin()
+            .await
+            .map_err(|_| ApiError::Database)?;
+        authorize_admin_mutation(&mut tx, &context, AdminPermission::JobManage, false, now)
+            .await
+            .map_err(AdminAppError::from)?;
+        authorize_admin_mutation(
+            &mut tx,
+            &context,
+            required_admin_permission(preview.kind, &preview.parameters)?,
+            false,
+            now,
+        )
+        .await
+        .map_err(AdminAppError::from)?;
         sqlx::query(
             "INSERT INTO admin_bulk_previews
              (id, actor_id, kind, parameters, targets, target_count,
@@ -239,9 +268,10 @@ impl AdminJobService {
         .bind(sha256_hex(&canonical))
         .bind(preview.expires_at)
         .bind(now)
-        .execute(&self.repository.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|_| ApiError::Database)?;
+        tx.commit().await.map_err(|_| ApiError::Database)?;
         Ok(preview)
     }
 
@@ -264,6 +294,17 @@ impl AdminJobService {
                 "idempotency key must contain 1 to 128 characters".to_owned(),
             ));
         }
+        let mut context = MutationContext::new(
+            AdminPrincipal {
+                id: actor_id.to_owned(),
+                session_id: Some(session_id.to_owned()),
+                source_ip: None,
+                user_agent_hash: None,
+                request_id: None,
+            },
+            reason,
+        )?;
+        context.operation_id = Some(idempotency_key.to_owned());
         let now = self.application.trusted_now().await?;
         let mut tx = self
             .repository
@@ -271,6 +312,9 @@ impl AdminJobService {
             .begin()
             .await
             .map_err(|_| ApiError::Database)?;
+        authorize_admin_mutation(&mut tx, &context, AdminPermission::JobManage, true, now)
+            .await
+            .map_err(AdminAppError::from)?;
         let preview = sqlx::query(
             "SELECT kind, parameters, targets, target_count, request_hash, consumed_at, expires_at
              FROM admin_bulk_previews
@@ -291,6 +335,15 @@ impl AdminJobService {
         let parameters: Value = preview
             .try_get("parameters")
             .map_err(|_| ApiError::Database)?;
+        authorize_admin_mutation(
+            &mut tx,
+            &context,
+            required_admin_permission(kind, &parameters)?,
+            true,
+            now,
+        )
+        .await
+        .map_err(AdminAppError::from)?;
         let targets: Vec<BulkTarget> =
             serde_json::from_value(preview.try_get("targets").map_err(|_| ApiError::Database)?)
                 .map_err(|_| ApiError::Database)?;
@@ -436,6 +489,9 @@ impl AdminJobService {
             .begin()
             .await
             .map_err(|_| ApiError::Database)?;
+        authorize_admin_mutation(&mut tx, context, AdminPermission::JobManage, false, now)
+            .await
+            .map_err(AdminAppError::from)?;
         if let Some(response) =
             admin_operation::claim_prepared::<BulkJob>(&mut tx, &operation).await?
         {
@@ -1624,6 +1680,33 @@ fn target_type(kind: BulkJobKind) -> &'static str {
     }
 }
 
+pub(crate) fn required_admin_permission(
+    kind: BulkJobKind,
+    parameters: &Value,
+) -> AdminJobResult<AdminPermission> {
+    match kind {
+        BulkJobKind::AccountSetState => Ok(
+            match parse_account_state(parameter_string(parameters, "state")?)? {
+                AccountState::Active | AccountState::Suspended => AdminPermission::AccountWrite,
+                AccountState::Denylisted => AdminPermission::AccountDenylist,
+            },
+        ),
+        BulkJobKind::LicenseSetStatus => Ok(AdminPermission::LicenseWrite),
+        BulkJobKind::ActivationCodeRevoke | BulkJobKind::ActivationCodeExpire => {
+            Ok(AdminPermission::CodeWrite)
+        }
+        BulkJobKind::DeviceSetState => Ok(
+            match parse_device_state(parameter_string(parameters, "state")?)? {
+                DeviceState::Removed => AdminPermission::DeviceRemove,
+                DeviceState::Revoked | DeviceState::Suspicious => AdminPermission::DeviceSecurity,
+                DeviceState::PendingActivation | DeviceState::Active => {
+                    return Err(AdminJobError::Validation("invalid device state".to_owned()));
+                }
+            },
+        ),
+    }
+}
+
 fn authorized_roles(kind: BulkJobKind, parameters: &Value) -> AdminJobResult<Vec<&'static str>> {
     let roles = match kind {
         BulkJobKind::AccountSetState => {
@@ -1712,6 +1795,26 @@ mod tests {
         .await
         .expect("insert admin user");
         sqlx::query(
+            "INSERT INTO admin_password_credentials
+             (user_id, password_hash, key_id, changed_at)
+             VALUES ($1, 'test-only-hash', 'test-only-key', $2)",
+        )
+        .bind(&actor_id)
+        .bind(now)
+        .execute(&repository.pool)
+        .await
+        .expect("insert admin password credential");
+        sqlx::query(
+            "INSERT INTO admin_role_bindings
+             (user_id, role, granted_by, reason, created_at)
+             VALUES ($1, 'licensing_admin', 'test', 'bulk authorization test', $2)",
+        )
+        .bind(&actor_id)
+        .bind(now)
+        .execute(&repository.pool)
+        .await
+        .expect("insert admin role");
+        sqlx::query(
             "INSERT INTO admin_sessions
              (id, user_id, token_hash, csrf_hash, auth_time, elevated_until,
               last_seen_at, expires_at, created_at)
@@ -1776,6 +1879,7 @@ mod tests {
         let preview = jobs
             .create_preview(
                 &actor_id,
+                &session_id,
                 CreatePreview {
                     kind: BulkJobKind::AccountSetState,
                     target_ids: vec![target_id.clone()],

@@ -85,10 +85,30 @@ impl From<AdminAppError> for AdminAuthError {
                 Self::Conflict
             }
             AdminAppError::PermissionDenied => Self::PermissionDenied,
+            AdminAppError::StepUpRequired => Self::StepUpRequired,
             AdminAppError::Service(error) => Self::Service(error),
             AdminAppError::Serialization(_) | AdminAppError::SecretDelivery => {
                 Self::Service(ApiError::Internal)
             }
+        }
+    }
+}
+
+impl From<AdminAuthError> for AdminAppError {
+    fn from(error: AdminAuthError) -> Self {
+        match error {
+            AdminAuthError::PermissionDenied
+            | AdminAuthError::InvalidCredentials
+            | AdminAuthError::InvalidSession
+            | AdminAuthError::InvalidEnrollment
+            | AdminAuthError::RateLimited => Self::PermissionDenied,
+            AdminAuthError::StepUpRequired => Self::StepUpRequired,
+            AdminAuthError::Conflict => Self::IdempotencyConflict,
+            AdminAuthError::VersionConflict => Self::VersionConflict,
+            AdminAuthError::NotFound => Self::NotFound,
+            AdminAuthError::Validation(message) => Self::Validation(message),
+            AdminAuthError::Keyring => Self::Service(ApiError::Internal),
+            AdminAuthError::Service(error) => Self::Service(error),
         }
     }
 }
@@ -105,6 +125,15 @@ pub enum AdminRole {
 }
 
 impl AdminRole {
+    const ALL: [Self; 6] = [
+        Self::PlatformOwner,
+        Self::LicensingAdmin,
+        Self::SecurityAdmin,
+        Self::BillingAdmin,
+        Self::SupportOperator,
+        Self::Auditor,
+    ];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::PlatformOwner => "platform_owner",
@@ -131,6 +160,7 @@ impl AdminRole {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdminPermission {
+    ProfileWrite,
     IdentityManage,
     AccountRead,
     AccountWrite,
@@ -213,6 +243,7 @@ impl AdminPermission {
 
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::ProfileWrite => "profile.write",
             Self::IdentityManage => "identity.manage",
             Self::AccountRead => "account.read",
             Self::AccountWrite => "account.write",
@@ -1258,6 +1289,8 @@ impl AdminAuthService {
             .execute(&mut *tx)
             .await
             .map_err(|_| ApiError::Database)?;
+        authorize_admin_mutation(&mut tx, context, AdminPermission::ProfileWrite, true, now)
+            .await?;
         if let Some(response) =
             admin_operation::claim_prepared::<PasswordChangeOperationResponse>(&mut tx, &operation)
                 .await?
@@ -1717,7 +1750,8 @@ fn role_allows(role: AdminRole, permission: AdminPermission) -> bool {
         R::PlatformOwner => true,
         R::LicensingAdmin => matches!(
             permission,
-            P::AccountRead
+            P::ProfileWrite
+                | P::AccountRead
                 | P::AccountWrite
                 | P::LicenseRead
                 | P::LicenseWrite
@@ -1734,7 +1768,8 @@ fn role_allows(role: AdminRole, permission: AdminPermission) -> bool {
         ),
         R::SecurityAdmin => matches!(
             permission,
-            P::AccountRead
+            P::ProfileWrite
+                | P::AccountRead
                 | P::AccountDenylist
                 | P::LicenseRead
                 | P::CodeRead
@@ -1747,7 +1782,8 @@ fn role_allows(role: AdminRole, permission: AdminPermission) -> bool {
         ),
         R::BillingAdmin => matches!(
             permission,
-            P::AccountRead
+            P::ProfileWrite
+                | P::AccountRead
                 | P::LicenseRead
                 | P::BillingRead
                 | P::BillingWrite
@@ -1758,7 +1794,8 @@ fn role_allows(role: AdminRole, permission: AdminPermission) -> bool {
         ),
         R::SupportOperator => matches!(
             permission,
-            P::AccountRead
+            P::ProfileWrite
+                | P::AccountRead
                 | P::LicenseRead
                 | P::CodeRead
                 | P::DeviceRead
@@ -1769,7 +1806,8 @@ fn role_allows(role: AdminRole, permission: AdminPermission) -> bool {
         ),
         R::Auditor => matches!(
             permission,
-            P::AccountRead
+            P::ProfileWrite
+                | P::AccountRead
                 | P::LicenseRead
                 | P::CodeRead
                 | P::DeviceRead
@@ -1780,6 +1818,95 @@ fn role_allows(role: AdminRole, permission: AdminPermission) -> bool {
                 | P::SystemRead
         ),
     }
+}
+
+pub(crate) async fn authorize_admin_mutation(
+    tx: &mut Transaction<'_, Postgres>,
+    context: &MutationContext,
+    permission: AdminPermission,
+    require_step_up: bool,
+    now: i64,
+) -> AdminAuthResult<()> {
+    let authorized_roles = AdminRole::ALL
+        .into_iter()
+        .filter(|role| role_allows(*role, permission))
+        .map(AdminRole::as_str)
+        .collect::<Vec<_>>();
+    if let Some(session_id) = context.principal.session_id.as_deref() {
+        let elevated_until = sqlx::query_scalar::<_, i64>(
+            "SELECT s.elevated_until
+             FROM admin_sessions s
+             JOIN admin_users u ON u.id = s.user_id
+             JOIN admin_password_credentials p ON p.user_id = s.user_id
+             JOIN admin_role_bindings r ON r.user_id = s.user_id
+             WHERE s.id = $1 AND s.user_id = $2
+               AND s.revoked_at IS NULL AND s.expires_at > $3
+               AND s.last_seen_at + $4 > $3
+               AND s.credential_epoch = p.credential_epoch
+               AND u.status = 'active' AND r.role = ANY($5)
+             LIMIT 1
+             FOR UPDATE OF s, u FOR SHARE OF p, r",
+        )
+        .bind(session_id)
+        .bind(&context.principal.id)
+        .bind(now)
+        .bind(SESSION_IDLE_SECONDS)
+        .bind(&authorized_roles)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|_| ApiError::Database)?
+        .ok_or(AdminAuthError::PermissionDenied)?;
+        if require_step_up && elevated_until <= now {
+            return Err(AdminAuthError::StepUpRequired);
+        }
+        return Ok(());
+    }
+    if context.job_id.is_some() {
+        let authorized = sqlx::query_scalar::<_, i32>(
+            "SELECT 1
+             FROM admin_users u
+             JOIN admin_role_bindings r ON r.user_id = u.id
+             WHERE u.id = $1 AND u.status = 'active' AND r.role = ANY($2)
+             LIMIT 1
+             FOR SHARE OF u, r",
+        )
+        .bind(&context.principal.id)
+        .bind(&authorized_roles)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|_| ApiError::Database)?
+        .is_some();
+        if !authorized {
+            return Err(AdminAuthError::PermissionDenied);
+        }
+        if permission != AdminPermission::JobManage {
+            let job_roles = AdminRole::ALL
+                .into_iter()
+                .filter(|role| role_allows(*role, AdminPermission::JobManage))
+                .map(AdminRole::as_str)
+                .collect::<Vec<_>>();
+            let can_manage_jobs = sqlx::query_scalar::<_, i32>(
+                "SELECT 1
+                 FROM admin_users u
+                 JOIN admin_role_bindings r ON r.user_id = u.id
+                 WHERE u.id = $1 AND u.status = 'active' AND r.role = ANY($2)
+                 LIMIT 1
+                 FOR SHARE OF u, r",
+            )
+            .bind(&context.principal.id)
+            .bind(&job_roles)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|_| ApiError::Database)?
+            .is_some();
+            if !can_manage_jobs {
+                return Err(AdminAuthError::PermissionDenied);
+            }
+        }
+    }
+    // A context with neither a browser session nor a job is an explicitly local Admin CLI
+    // operation. Its database/host identity is the authorization boundary.
+    Ok(())
 }
 
 pub(crate) async fn insert_enrollment_token(

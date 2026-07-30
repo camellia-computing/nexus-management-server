@@ -1940,6 +1940,64 @@ test('invoice retries preserve the original idempotency key', async ({ page }) =
   expect(operationIds[0]).toBe(operationIds[1]);
 });
 
+test('billing pages append opaque cursor results without repeating the first page', async ({
+  page
+}) => {
+  await mockConsole(page, true);
+  const requests: string[] = [];
+  await page.route(/\/api\/v1\/billing\/payment-claims(?:\?.*)?$/, (route) => {
+    const url = new URL(route.request().url());
+    requests.push(url.search);
+    const cursor = url.searchParams.get('cursor');
+    return route.fulfill({
+      json:
+        cursor === 'opaque-claim-cursor'
+          ? {
+              items: [
+                {
+                  id: 'claim_page_2',
+                  rowVersion: 1,
+                  invoiceId: 'invoice_page_2',
+                  paidAmount: '29.00',
+                  paidAsset: 'USD',
+                  externalTransactionId: 'bank-page-002',
+                  status: 'submitted',
+                  createdAt: 1899999999
+                }
+              ],
+              nextCursor: null
+            }
+          : {
+              items: [
+                {
+                  id: 'claim_page_1',
+                  rowVersion: 1,
+                  invoiceId: 'invoice_page_1',
+                  paidAmount: '19.00',
+                  paidAsset: 'USD',
+                  externalTransactionId: 'bank-page-001',
+                  status: 'submitted',
+                  createdAt: 1900000000
+                }
+              ],
+              nextCursor: 'opaque-claim-cursor'
+            }
+    });
+  });
+
+  await page.goto('/#billing');
+  await expect(page.getByText('claim_page_1')).toBeVisible();
+  await expect(page.getByText('claim_page_2')).toHaveCount(0);
+  await page.getByRole('button', { name: '加载更多' }).click();
+  await expect(page.getByText('claim_page_1')).toBeVisible();
+  await expect(page.getByText('claim_page_2')).toBeVisible();
+  await expect(page.getByRole('button', { name: '加载更多' })).toHaveCount(0);
+  expect(requests).toHaveLength(2);
+  expect(new URLSearchParams(requests[0]).get('pageSize')).toBe('50');
+  expect(new URLSearchParams(requests[0]).has('cursor')).toBe(false);
+  expect(new URLSearchParams(requests[1]).get('cursor')).toBe('opaque-claim-cursor');
+});
+
 test('invoice offer selection keeps plan seats, validation and responsive layout aligned', async ({
   page
 }, testInfo) => {
@@ -2105,7 +2163,7 @@ test('payment evidence retries preserve the upload operation', async ({ page }) 
   const operationIds: string[] = [];
   let attempts = 0;
   let uploaded = false;
-  await page.route('**/api/v1/billing/payment-claims', (route) =>
+  await page.route(/\/api\/v1\/billing\/payment-claims(?:\?.*)?$/, (route) =>
     route.fulfill({
       json: {
         items: [
@@ -2181,7 +2239,7 @@ test('payment review reloads a stale claim and retries with its new row version'
   let evidenceLoads = 0;
   let reviewAttempts = 0;
   const operationIds: string[] = [];
-  await page.route('**/api/v1/billing/payment-claims', (route) => {
+  await page.route(/\/api\/v1\/billing\/payment-claims(?:\?.*)?$/, (route) => {
     claimLoads += 1;
     return route.fulfill({
       json: {
@@ -2328,7 +2386,7 @@ test('activation code expiry sends a stable concrete timestamp', async ({ page }
 
 test('late payment evidence cannot replace the newly selected claim', async ({ page }) => {
   await mockConsole(page, true);
-  await page.route('**/api/v1/billing/payment-claims', (route) =>
+  await page.route(/\/api\/v1\/billing\/payment-claims(?:\?.*)?$/, (route) =>
     route.fulfill({
       json: {
         items: [

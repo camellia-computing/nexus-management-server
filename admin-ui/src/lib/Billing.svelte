@@ -100,6 +100,7 @@
       followUp: '需运营跟进',
       search: '搜索账单、账户或交易号…',
       refresh: '刷新',
+      loadMore: '加载更多',
       loadFailed: '账单数据加载失败',
       createTitle: '新建商业账单',
       licenseId: '授权 ID',
@@ -188,6 +189,7 @@
       followUp: 'Requires follow-up',
       search: 'Search invoices, accounts, or transaction IDs…',
       refresh: 'Refresh',
+      loadMore: 'Load more',
       loadFailed: 'Billing data failed to load',
       createTitle: 'Create commercial invoice',
       licenseId: 'License ID',
@@ -240,6 +242,7 @@
 
   let tab = $state<BillingTab>('claims');
   let rows = $state<Record<string, unknown>[]>([]);
+  let nextCursor = $state<string | null>(null);
   let loading = $state(true);
   let query = $state('');
   let dashboard = $state<Partial<AdminDashboard>>({});
@@ -269,6 +272,7 @@
   let loadGeneration = 0;
   let claimLoadGeneration = 0;
   let offerLoadGeneration = 0;
+  let queryTimer: ReturnType<typeof setTimeout> | undefined;
   const invoiceAttempt = new MutationAttempt();
   const reviewAttempt = new MutationAttempt();
   const evidenceAttempt = new MutationAttempt();
@@ -419,16 +423,31 @@
     }
   }
 
-  async function load(requestedTab: BillingTab = tab) {
+  async function load(requestedTab: BillingTab = tab, append = false) {
+    const paginated = requestedTab === 'claims' || requestedTab === 'invoices';
+    if (append && (!paginated || !nextCursor || loading)) return false;
     const generation = ++loadGeneration;
     loading = true;
     loadError = '';
     try {
+      const params = new URLSearchParams();
+      if (paginated) {
+        params.set('pageSize', '50');
+        if (append && nextCursor) params.set('cursor', nextCursor);
+        if (query.trim()) params.set('query', query.trim());
+      }
+      const endpoint = `${configs[requestedTab].endpoint}${params.size ? `?${params}` : ''}`;
       const data = await api<AdminPage<Record<string, unknown>> | Record<string, unknown>[]>(
-        configs[requestedTab].endpoint
+        endpoint
       );
       if (generation !== loadGeneration || requestedTab !== tab) return false;
-      rows = Array.isArray(data) ? data : data.items;
+      if (Array.isArray(data)) {
+        rows = data;
+        nextCursor = null;
+      } else {
+        rows = append ? [...rows, ...data.items] : data.items;
+        nextCursor = data.nextCursor;
+      }
       return true;
     } catch (cause) {
       if (generation === loadGeneration && requestedTab === tab)
@@ -444,7 +463,17 @@
     tab = value;
     query = '';
     rows = [];
+    nextCursor = null;
     void load(value);
+  }
+
+  function scheduleSearch(value: string) {
+    query = value;
+    if (queryTimer) clearTimeout(queryTimer);
+    queryTimer = setTimeout(() => {
+      nextCursor = null;
+      void load(tab);
+    }, 250);
   }
 
   function openInvoice() {
@@ -682,7 +711,11 @@
   </div>
   <div class="resource-toolbar">
     <div class="search-field">
-      <Search size={17} /><input bind:value={query} placeholder={messages[$locale].search} />
+      <Search size={17} /><input
+        value={query}
+        oninput={(event) => scheduleSearch(event.currentTarget.value)}
+        placeholder={messages[$locale].search}
+      />
     </div>
     <button
       class="icon-button"
@@ -700,6 +733,11 @@
     {loading}
     onSelect={tab === 'claims' && canReview ? openClaim : undefined}
   />
+  {#if nextCursor}<div class="table-load-more">
+      <button disabled={loading} onclick={() => load(tab, true)}
+        >{messages[$locale].loadMore}</button
+      >
+    </div>{/if}
 </section>
 
 {#if creating}

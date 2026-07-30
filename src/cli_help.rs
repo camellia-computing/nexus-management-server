@@ -140,10 +140,10 @@ const ADMIN_COMMANDS: &[AdminCommand] = &[
     AdminCommand {
         group: "billing",
         name: "invoice list",
-        usage: "billing invoice list [--account <account-id>]",
-        summary_en: "List invoices, optionally scoped to an account.",
-        summary_zh: "列出账单，可选择限定到指定账号。",
-        options: &["account"],
+        usage: "billing invoice list [--account <account-id>] [--query <text>] [--cursor <opaque>] [--page-size <1..100>]",
+        summary_en: "List one bounded invoice page, optionally scoped to an account or search query.",
+        summary_zh: "列出一页有界账单，可按账号或搜索内容筛选。",
+        options: &["account", "query", "cursor", "page-size"],
         example: "billing invoice list --account acct_customer_001",
     },
     AdminCommand {
@@ -160,10 +160,10 @@ const ADMIN_COMMANDS: &[AdminCommand] = &[
     AdminCommand {
         group: "billing",
         name: "payment list",
-        usage: "billing payment list [--status <state>]",
-        summary_en: "List manual payment claims, optionally filtered by review state.",
-        summary_zh: "列出人工付款声明，可选择按审核状态筛选。",
-        options: &["status"],
+        usage: "billing payment list [--status <state>] [--query <text>] [--cursor <opaque>] [--page-size <1..100>]",
+        summary_en: "List one bounded manual-payment page, optionally filtered by review state or search query.",
+        summary_zh: "列出一页有界人工付款声明，可按审核状态或搜索内容筛选。",
+        options: &["status", "query", "cursor", "page-size"],
         example: "billing payment list --status submitted",
     },
     AdminCommand {
@@ -456,6 +456,24 @@ const HELP_OPTIONS: &[HelpOption] = &[
         value: "<account-id>",
         summary_en: "Limit or bind the operation to an account.",
         summary_zh: "将操作限定或绑定到指定账号。",
+    },
+    HelpOption {
+        name: "query",
+        value: "<text>",
+        summary_en: "Case-insensitive search text; maximum 128 characters.",
+        summary_zh: "不区分大小写的搜索文本，最多 128 个字符。",
+    },
+    HelpOption {
+        name: "cursor",
+        value: "<opaque>",
+        summary_en: "Opaque continuation cursor returned by the preceding page.",
+        summary_zh: "上一页返回的不透明续页游标。",
+    },
+    HelpOption {
+        name: "page-size",
+        value: "<1..100>",
+        summary_en: "Bounded page size; defaults to 50.",
+        summary_zh: "有界页大小，默认 50。",
     },
     HelpOption {
         name: "license",
