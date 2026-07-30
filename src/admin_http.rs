@@ -2116,8 +2116,10 @@ async fn create_payment_method(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct InvoiceQuery {
     account_id: Option<String>,
-    #[serde(flatten)]
-    page: PageRequest,
+    cursor: Option<String>,
+    #[serde(default = "default_admin_page_size")]
+    page_size: u32,
+    query: Option<String>,
 }
 
 async fn invoices(
@@ -2133,7 +2135,10 @@ async fn invoices(
         state
             .application
             .repository()
-            .billing_invoices(query.account_id.as_deref(), query.page)
+            .billing_invoices(
+                query.account_id.as_deref(),
+                admin_page_request(&query.cursor, query.page_size, &query.query),
+            )
             .await?,
     )?))
 }
@@ -2221,8 +2226,10 @@ async fn create_invoice(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PaymentClaimQuery {
     status: Option<PaymentClaimStatus>,
-    #[serde(flatten)]
-    page: PageRequest,
+    cursor: Option<String>,
+    #[serde(default = "default_admin_page_size")]
+    page_size: u32,
+    query: Option<String>,
 }
 
 async fn payment_claims(
@@ -2238,7 +2245,10 @@ async fn payment_claims(
         state
             .application
             .repository()
-            .manual_payment_claims(query.status, query.page)
+            .manual_payment_claims(
+                query.status,
+                admin_page_request(&query.cursor, query.page_size, &query.query),
+            )
             .await?,
     )?))
 }
@@ -4523,10 +4533,31 @@ mod tests {
         assert_eq!(devices.page_size, 100);
         assert_eq!(devices.query.as_deref(), Some("example"));
 
+        let uri = "/?accountId=acct_example&cursor=invoice_cursor&pageSize=50&query=invoice"
+            .parse()
+            .expect("invoice query URI");
+        let Query(invoices) = Query::<InvoiceQuery>::try_from_uri(&uri).expect("invoice query");
+        assert_eq!(invoices.account_id.as_deref(), Some("acct_example"));
+        assert_eq!(invoices.cursor.as_deref(), Some("invoice_cursor"));
+        assert_eq!(invoices.page_size, 50);
+        assert_eq!(invoices.query.as_deref(), Some("invoice"));
+
+        let uri = "/?status=submitted&cursor=claim_cursor&pageSize=25&query=claim"
+            .parse()
+            .expect("payment-claim query URI");
+        let Query(claims) =
+            Query::<PaymentClaimQuery>::try_from_uri(&uri).expect("payment-claim query");
+        assert_eq!(claims.status, Some(PaymentClaimStatus::Submitted));
+        assert_eq!(claims.cursor.as_deref(), Some("claim_cursor"));
+        assert_eq!(claims.page_size, 25);
+        assert_eq!(claims.query.as_deref(), Some("claim"));
+
         let unknown = "/?pageSize=100&unexpected=true"
             .parse()
             .expect("unknown query URI");
         assert!(Query::<DeviceQuery>::try_from_uri(&unknown).is_err());
+        assert!(Query::<InvoiceQuery>::try_from_uri(&unknown).is_err());
+        assert!(Query::<PaymentClaimQuery>::try_from_uri(&unknown).is_err());
     }
 
     #[test]
