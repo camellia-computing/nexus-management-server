@@ -970,7 +970,9 @@ mod tests {
                 .await
                 .expect("connect PostgreSQL");
         repository.migrate().await.expect("run migrations");
-        let application = AdminApplication::new(repository.clone(), 24 * 60 * 60);
+        let application = AdminApplication::new(repository.clone(), 24 * 60 * 60)
+            .await
+            .expect("initialize admin application");
         let keyring = Arc::new(AdminKeyring::ephemeral());
         let service = AdminIdentityService::new(application.clone(), keyring);
         let now = application.trusted_now().await.unwrap();
@@ -1083,7 +1085,9 @@ mod tests {
                 .await
                 .expect("connect PostgreSQL");
         repository.migrate().await.expect("run migrations");
-        let application = AdminApplication::new(repository.clone(), 24 * 60 * 60);
+        let application = AdminApplication::new(repository.clone(), 24 * 60 * 60)
+            .await
+            .expect("initialize admin application");
         let keyring = Arc::new(AdminKeyring::ephemeral());
         let key_id = keyring.active_key_id().to_owned();
         let service = AdminIdentityService::new(application.clone(), keyring);

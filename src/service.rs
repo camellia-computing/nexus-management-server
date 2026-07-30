@@ -4,7 +4,6 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicI64, Ordering},
     },
-    time::Instant,
 };
 
 use semver::Version;
@@ -43,6 +42,7 @@ use crate::{
         TeamOperationStatusResponse, TeamProfile, TeamRepository, TransferWorkspaceOwnership,
         UpdateWorkspaceMember, WorkspaceMember,
     },
+    time_authority::PersistentTimeAuthority,
     webhooks::{
         CreateWebhookEndpoint, DeleteWebhookEndpoint, PostgresWebhookRepository,
         RotateWebhookSecret, UpdateWebhookEndpoint, WebhookCleanupReport, WebhookDeletion,
@@ -133,44 +133,6 @@ pub struct LicenseService {
     persistent_time: Option<PersistentTimeAuthority>,
     client_version_policy: ClientVersionPolicy,
     minimum_client_version: Version,
-}
-
-#[derive(Clone)]
-struct PersistentTimeAuthority {
-    origin: Arc<Instant>,
-    seed_unix: i64,
-    observed_high_water_unix: Arc<AtomicI64>,
-    max_forward_jump_seconds: i64,
-}
-
-impl PersistentTimeAuthority {
-    fn new(seed_unix: i64, max_forward_jump_seconds: i64) -> Self {
-        Self {
-            origin: Arc::new(Instant::now()),
-            seed_unix,
-            observed_high_water_unix: Arc::new(AtomicI64::new(seed_unix)),
-            max_forward_jump_seconds,
-        }
-    }
-
-    fn now(&self) -> i64 {
-        self.now_at_elapsed(self.elapsed_seconds())
-    }
-
-    fn observe(&self, trusted_unix: i64) {
-        self.observed_high_water_unix
-            .fetch_max(trusted_unix, Ordering::AcqRel);
-    }
-
-    fn now_at_elapsed(&self, elapsed_seconds: i64) -> i64 {
-        self.seed_unix
-            .saturating_add(elapsed_seconds.max(0))
-            .max(self.observed_high_water_unix.load(Ordering::Acquire))
-    }
-
-    fn elapsed_seconds(&self) -> i64 {
-        self.origin.elapsed().as_secs().min(i64::MAX as u64) as i64
-    }
 }
 
 #[derive(Debug, Clone)]

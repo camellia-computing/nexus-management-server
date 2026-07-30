@@ -244,7 +244,8 @@ pub async fn run_admin_web(config: AdminHttpConfig) -> Result<(), Box<dyn std::e
     let application = AdminApplication::new(
         repository.clone(),
         time_max_forward_jump_seconds_from_env().map_err(|error| error.to_string())?,
-    );
+    )
+    .await?;
     let storage = ObjectStorageService::new(
         application.clone(),
         keyring.clone(),
@@ -592,6 +593,7 @@ async fn admin_readyz(State(state): State<AdminHttpState>) -> Response<Body> {
                 .readiness_check(state.application.repository())
                 .await
                 .is_ok()
+            && state.application.trusted_now().await.is_ok()
     })
     .await
     .unwrap_or(false);

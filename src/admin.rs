@@ -40,7 +40,7 @@ pub async fn run(args: Vec<String>) -> AdminResult<()> {
         return Ok(());
     }
     let repository = admin_repository().await?;
-    let application = AdminApplication::from_environment(repository.clone())?;
+    let application = AdminApplication::from_environment(repository.clone()).await?;
     match args[0].as_str() {
         "account" => account(&application, &args[1..], output).await,
         "license" => license(&application, &args[1..], output).await,

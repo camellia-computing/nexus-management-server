@@ -23,6 +23,7 @@ mod secret_file;
 pub mod service;
 pub mod store;
 pub mod team;
+mod time_authority;
 pub mod time_format;
 pub mod webhooks;
 pub mod workspace;
