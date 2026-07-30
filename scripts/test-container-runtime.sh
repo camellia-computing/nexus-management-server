@@ -8,7 +8,7 @@ if [[ -z "$image" ]]; then
   exit 2
 fi
 
-for command in curl docker jq python3; do
+for command in curl docker jq python3 tar; do
   command -v "$command" >/dev/null || {
     echo "$command is required for the container runtime test" >&2
     exit 2
@@ -19,12 +19,15 @@ repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 temporary_directory="$(mktemp -d)"
 suffix="${GITHUB_RUN_ID:-local}-$$"
 network="camellia-runtime-$suffix"
+secrets_volume="camellia-secrets-$suffix"
 postgres="camellia-postgres-$suffix"
 clamav="camellia-clamav-$suffix"
 public="camellia-public-$suffix"
 admin="camellia-admin-$suffix"
 worker="camellia-worker-$suffix"
 admin_live="camellia-admin-live-$suffix"
+secrets_volume_created=0
+postgres_image='postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15'
 
 run_live_admin_ui="${CAMELLIA_NEXUS_RUN_ADMIN_UI_LIVE:-0}"
 case "$run_live_admin_ui" in
@@ -47,6 +50,9 @@ cleanup() {
   docker rm --force "$worker" "$admin_live" "$admin" "$public" "$clamav" "$postgres" \
     >/dev/null 2>&1 || true
   docker network rm "$network" >/dev/null 2>&1 || true
+  if [[ "$secrets_volume_created" == 1 ]]; then
+    docker volume rm "$secrets_volume" >/dev/null 2>&1 || true
+  fi
   rm -rf "$temporary_directory"
 }
 trap cleanup EXIT HUP INT TERM
@@ -70,7 +76,7 @@ docker run --detach --name "$postgres" --network "$network" --network-alias post
   --env "POSTGRES_DB=$database_name" \
   --env "POSTGRES_USER=$migrate_role" \
   --env "POSTGRES_PASSWORD=$migrate_password" \
-  postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15 \
+  "$postgres_image" \
   >/dev/null
 
 for _ in {1..30}; do
@@ -87,30 +93,41 @@ done
 docker exec "$postgres" sh -ec \
   "test \"\$(cat /proc/1/comm)\" = postgres && pg_isready --username $migrate_role --dbname $database_name" \
   >/dev/null
-docker exec "$postgres" psql --username "$migrate_role" --dbname "$database_name" \
+docker exec --interactive "$postgres" psql --username "$migrate_role" --dbname "$database_name" \
   --set ON_ERROR_STOP=1 \
   --set public_role="$public_role" --set public_password="$public_password" \
   --set admin_web_role="$admin_web_role" --set admin_web_password="$admin_web_password" \
   --set admin_worker_role="$admin_worker_role" --set admin_worker_password="$admin_worker_password" \
-  --command "SELECT format('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS', :'public_role', :'public_password') \\gexec" \
-  --command "SELECT format('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS', :'admin_web_role', :'admin_web_password') \\gexec" \
-  --command "SELECT format('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS', :'admin_worker_role', :'admin_worker_password') \\gexec" \
-  >/dev/null
+  >/dev/null <<'SQL'
+SELECT format(
+  'CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
+  :'public_role',
+  :'public_password'
+) \gexec
+SELECT format(
+  'CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
+  :'admin_web_role',
+  :'admin_web_password'
+) \gexec
+SELECT format(
+  'CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
+  :'admin_worker_role',
+  :'admin_worker_password'
+) \gexec
+SQL
 
-if [[ "$run_live_admin_ui" == 1 ]]; then
-  echo "==> Start the pinned production evidence scanner"
-  docker run --detach --name "$clamav" --network "$network" --network-alias clamav \
-    --platform linux/amd64 \
-    clamav/clamav:1.4.3_base@sha256:be37f82c9cccf6c2559a44b8fb537e6f11e8547b37988650b169c4540c2f298c \
-    >/dev/null
-  for _ in {1..90}; do
-    if docker exec "$clamav" clamdscan --ping 1 >/dev/null 2>&1; then
-      break
-    fi
-    sleep 1
-  done
-  docker exec "$clamav" clamdscan --ping 1 >/dev/null
-fi
+echo "==> Start the pinned production evidence scanner"
+docker run --detach --name "$clamav" --network "$network" --network-alias clamav \
+  --platform linux/amd64 \
+  clamav/clamav:1.4.3_base@sha256:be37f82c9cccf6c2559a44b8fb537e6f11e8547b37988650b169c4540c2f298c \
+  >/dev/null
+for _ in {1..90}; do
+  if docker exec "$clamav" clamdscan --ping 1 >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+docker exec "$clamav" clamdscan --ping 1 >/dev/null
 
 "$repository_root/scripts/generate-entitlement-key.sh" \
   "$temporary_directory/entitlement-private.pem" \
@@ -119,6 +136,16 @@ fi
 "$repository_root/scripts/generate-keyring.sh" workspace "$temporary_directory/workspace-keyring.json" >/dev/null
 "$repository_root/scripts/generate-keyring.sh" webhook "$temporary_directory/webhook-keyring.json" >/dev/null
 chmod 0444 "$temporary_directory/entitlement-private.pem" "$temporary_directory"/*-keyring.json
+if docker volume inspect "$secrets_volume" >/dev/null 2>&1; then
+  echo "Refusing to reuse an existing runtime secrets volume: $secrets_volume" >&2
+  exit 1
+fi
+docker volume create "$secrets_volume" >/dev/null
+secrets_volume_created=1
+tar --create --directory "$temporary_directory" --file - \
+  entitlement-private.pem admin-keyring.json workspace-keyring.json webhook-keyring.json |
+  docker run --rm --interactive --volume "$secrets_volume:/run/secrets" --entrypoint tar \
+    "$postgres_image" -xf - -C /run/secrets
 
 common=(
   --network "$network"
@@ -140,9 +167,7 @@ common=(
   --env CAMELLIA_NEXUS_LOG_LEVEL=warn
   --env CAMELLIA_NEXUS_METRICS_BIND=0.0.0.0:9091
   --env CAMELLIA_NEXUS_METRICS_ALLOW_NON_LOOPBACK=true
-  --volume "$temporary_directory/entitlement-private.pem:/run/secrets/entitlement-private.pem:ro"
-  --volume "$temporary_directory/workspace-keyring.json:/run/secrets/workspace-keyring.json:ro"
-  --volume "$temporary_directory/webhook-keyring.json:/run/secrets/webhook-keyring.json:ro"
+  --volume "$secrets_volume:/run/secrets:ro"
 )
 
 runtime_security=(
@@ -290,13 +315,40 @@ codes="$(run_admin code list --account "$account_id")"
 test "$(grep -Foc "\"order_id\": \"$code_operation:1\"" <<<"$codes")" -eq 1
 
 echo "==> Verify first administrator bootstrap"
-owner="$(docker run --rm "${common[@]}" "${runtime_security[@]}" \
-  --env "DATABASE_URL=$admin_web_database_url" \
-  --env CAMELLIA_NEXUS_ADMIN_KEYRING_PATH=/run/secrets/admin-keyring.json \
-  --volume "$temporary_directory/admin-keyring.json:/run/secrets/admin-keyring.json:ro" \
-  "$image" admin --raw operator bootstrap runtimeowner --display-name 'Runtime Owner' \
-  --actor "$operator_id" --reason "$reason")"
-grep -Fq '"enrollmentToken":' <<<"$owner"
+bootstrap_error="$temporary_directory/bootstrap.stderr"
+if ! owner="$(docker run --rm "${common[@]}" "${runtime_security[@]}" \
+    --env "DATABASE_URL=$admin_web_database_url" \
+    --env CAMELLIA_NEXUS_ADMIN_KEYRING_PATH=/run/secrets/admin-keyring.json \
+    "$image" admin --raw operator bootstrap runtimeowner --display-name 'Runtime Owner' \
+    --actor "$operator_id" --reason "$reason" 2>"$bootstrap_error")"; then
+  echo 'first administrator bootstrap failed' >&2
+  sed -E 's#postgres://[^[:space:]]+#postgres://[redacted]#g' "$bootstrap_error" >&2
+  printf 'configured administrator key IDs: ' >&2
+  jq -r '.keys | keys | join(",")' "$temporary_directory/admin-keyring.json" >&2
+  docker exec "$postgres" psql --username "$migrate_role" --dbname "$database_name" \
+    --tuples-only --no-align --set ON_ERROR_STOP=1 --command \
+    "SELECT source || ':' || key_id FROM (
+       SELECT 'admin_password_credentials' AS source, key_id FROM admin_password_credentials
+       UNION SELECT 'admin_totp_credentials', key_id FROM admin_totp_credentials
+       UNION SELECT 'admin_enrollment_states', key_id FROM admin_enrollment_states
+       UNION SELECT 'admin_secret_deliveries', key_id
+         FROM admin_secret_deliveries WHERE key_id <> ''
+       UNION SELECT 'stored_objects', key_id FROM stored_objects
+     ) AS referenced_keys ORDER BY source, key_id" >&2
+  jq -c '{
+    level,
+    target,
+    message: (.fields.message // .message),
+    error: (.fields.error // .error),
+    command: (.fields.command // .command)
+  }' <<<"$owner" >&2 2>/dev/null || true
+  exit 1
+fi
+if ! jq -e '.enrollmentToken | type == "string" and length >= 32' <<<"$owner" >/dev/null; then
+  echo 'first administrator bootstrap returned an invalid response shape' >&2
+  jq -c 'keys' <<<"$owner" >&2 2>/dev/null || true
+  exit 1
+fi
 unset account license issued replay_error codes
 
 echo "==> Verify public and administration runtime roles"
@@ -322,14 +374,9 @@ admin_common=(
   --env CAMELLIA_NEXUS_ADMIN_PUBLIC_ORIGIN=https://admin.invalid.example
   --env CAMELLIA_NEXUS_ADMIN_KEYRING_PATH=/run/secrets/admin-keyring.json
   --env CAMELLIA_NEXUS_OBJECT_STORAGE=database
-  --volume "$temporary_directory/admin-keyring.json:/run/secrets/admin-keyring.json:ro"
+  --env CAMELLIA_NEXUS_EVIDENCE_SCANNER=clamav
+  --env CAMELLIA_NEXUS_CLAMAV_ADDRESS=clamav:3310
 )
-if [[ "$run_live_admin_ui" == 1 ]]; then
-  admin_common+=(
-    --env CAMELLIA_NEXUS_EVIDENCE_SCANNER=clamav
-    --env CAMELLIA_NEXUS_CLAMAV_ADDRESS=clamav:3310
-  )
-fi
 
 docker run --detach --name "$admin" --publish 127.0.0.1::8090 \
   "${admin_common[@]}" "${runtime_security[@]}" \
@@ -682,8 +729,15 @@ unset expired_sessions
 docker run --detach --name "$worker" "${admin_common[@]}" "${runtime_security[@]}" \
   --env "DATABASE_URL=$admin_worker_database_url" \
   "$image" admin-worker >/dev/null
-sleep 2
-test "$(docker inspect --format '{{.State.Running}}' "$worker")" = true
+for _ in {1..30}; do
+  if docker exec "$worker" camellia-nexus-management-server healthcheck \
+    http://127.0.0.1:9091/readyz >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+docker exec "$worker" camellia-nexus-management-server healthcheck \
+  http://127.0.0.1:9091/readyz >/dev/null
 
 for container in "$public" "$admin" "$worker"; do
   test "$(docker inspect --format '{{.Config.User}}' "$container")" = 10001:10001
@@ -691,5 +745,22 @@ for container in "$public" "$admin" "$worker"; do
   test "$(docker inspect --format '{{json .HostConfig.CapDrop}}' "$container")" = '["ALL"]'
   test "$(docker inspect --format '{{json .HostConfig.SecurityOpt}}' "$container")" = '["no-new-privileges:true"]'
 done
+
+echo "==> Verify Worker liveness remains distinct from dependency readiness"
+docker stop --time 5 "$clamav" >/dev/null
+for _ in {1..20}; do
+  if ! docker exec "$worker" camellia-nexus-management-server healthcheck \
+    http://127.0.0.1:9091/readyz >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+docker exec "$worker" camellia-nexus-management-server healthcheck \
+  http://127.0.0.1:9091/healthz >/dev/null
+if docker exec "$worker" camellia-nexus-management-server healthcheck \
+    http://127.0.0.1:9091/readyz >/dev/null 2>&1; then
+  echo 'Admin Worker remained ready after its malware scanner stopped' >&2
+  exit 1
+fi
 
 echo "Container business flow, runtime roles, migrations, readiness, and hardening verified"

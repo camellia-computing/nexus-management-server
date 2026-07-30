@@ -53,10 +53,12 @@ Worker cannot read password credentials. A disposable pre-expired browser sessio
 dialog and retry retain one operation identity. The live browser also proves one-time secret
 destruction, optimistic concurrency, evidence scanning and payment approval, bounded bulk work,
 restricted support permissions, audit/system views, password rotation, session revocation, and logout.
-All generated credentials live under a mode-0700 temporary directory and are removed by the exit
-trap. Network traces are disabled and failure screenshots blur authentication and one-time values. Do
-not add debug output that prints request bodies, cookies, TOTP material, delivery tokens, or plaintext
-codes.
+Generated credentials are staged under a mode-0700 host directory and copied without plaintext
+command-line arguments into a uniquely named ephemeral Docker volume. The exit trap removes both,
+including on a failed assertion. This avoids host bind-path differences between native Linux and
+Docker Desktop under WSL. Network traces are disabled and failure screenshots blur authentication
+and one-time values. Do not add debug output that prints request bodies, cookies, TOTP material,
+delivery tokens, or plaintext codes.
 
 The deterministic browser gate also verifies the manifest, exact icon dimensions, service-worker
 registration/update, and Cache Storage allow-list. Its offline check requires immutable application
@@ -80,7 +82,10 @@ page, while browser coverage exercises explicit **Load more** state.
 
 Operations-listener tests keep liveness independent from Worker readiness and drive readiness through
 unready, ready, and recovered-failure states. A bounded fake ClamAV endpoint verifies the exact
-`zPING`/`PONG` dependency probe used at startup and during continuous Worker checks.
+`zPING`/`PONG` dependency probe used at startup and during continuous Worker checks. Worker keyring
+readiness inventories only the enrollment, secret-delivery, and stored-object references available
+to its least-privilege database role; the final-container test proves that role starts without access
+to password or TOTP credential tables.
 
 Object-storage fault-injection tests use a fake external backend to commit bytes before returning a
 failed `put`, proving that the staging metadata survives and the worker can authenticate and finalize
@@ -95,9 +100,12 @@ HEAD/GET 长度，以证明元数据预检可避免不必要的正文请求，�
 运行时测试会创建隔离的 PostgreSQL 数据库、管理员注册因素与会话、账户、Team 授权、一次性交付、
 账单夹具、合成 PDF、固定 ClamAV 扫描器、Worker 和加固容器。一次性预过期浏览器会话验证真实
 step-up 对话框及重试沿用同一操作标识；真实浏览器还验证一次性密钥销毁、乐观并发、证据扫描与付款
-批准、有界批处理、受限支持权限、审计/系统视图、密码轮换、会话撤销及退出。全部临时凭据只存在于
-权限为 0700 的临时目录，并由退出清理器删除；网络 trace 被禁用，失败截图会模糊认证与一次性值。
-不得增加会打印请求正文、Cookie、TOTP、交付令牌或明文激活码的调试输出。
+批准、有界批处理、受限支持权限、审计/系统视图、密码轮换、会话撤销及退出。生成凭据先进入权限为
+0700 的宿主机临时目录，再通过标准输入复制到名称唯一的临时 Docker 卷，退出清理器会在成功或断言
+失败时同时删除两者，从而兼容原生 Linux 与 WSL 下的 Docker Desktop，且不把明文放入命令行参数。
+网络 trace 被禁用，失败截图会模糊认证与一次性值。不得增加会打印请求正文、Cookie、TOTP、交付
+令牌或明文激活码的调试输出。Worker 的密钥就绪检查仅盘点其最小权限角色可访问的注册状态、秘密
+交付和对象引用；最终容器测试同时证明 Worker 无权读取密码/TOTP 表但仍可正常启动。
 
 确定性浏览器门禁还会验证 manifest、精确图标尺寸、Service Worker 注册/更新及 Cache Storage
 白名单。断网检查要求带哈希的应用资源仍可读取，而导航、manifest、外观初始化脚本、管理 API 与
