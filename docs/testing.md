@@ -151,43 +151,46 @@ test、权威层测试、最终容器流程和原生跨仓场景全部通过后�
 
 ## Cross-repository access / 跨仓库访问
 
-The Windows native job and contract monitor resolve the sibling as
-`${{ github.repository_owner }}/nexus`. The repository name is fixed while the owner follows
-the repository executing the workflow, so an account transfer or same-name backup does not require a
-workflow edit. The GitHub App display name is not an interface and may differ between owners.
+The Windows native job and contract monitor read the organization variable
+`NEXUS_REPOSITORY_MAP`, bind the current checkout to logical ID
+`nexus-management`, and resolve sibling logical ID `nexus-client`. The map must
+contain exactly the reviewed pair with valid, distinct physical names; a
+missing, malformed, or stale map fails before authentication. The owner follows
+the repository running the workflow. A rename therefore updates the centrally
+audited map rather than workflow code.
 
-Windows 原生任务与协议监控始终将同级仓库解析为
-`${{ github.repository_owner }}/nexus`。仓库名固定，owner 跟随当前工作流所在仓库，因此账户
-迁移或其他 owner 下的同名备份无需修改工作流。GitHub App 的显示名称不属于接口，不同 owner 可以
-使用不同名称。
+Windows 原生任务与协议监控读取组织变量 `NEXUS_REPOSITORY_MAP`，将当前仓库绑定到逻辑 ID
+`nexus-management`，并解析同级逻辑 ID `nexus-client`。映射必须精确包含经审核的双仓、名称合法且
+互不相同；缺失、格式错误或过期时会在认证前失败。owner 始终跟随当前工作流仓库，仓库改名只需同步
+更新集中审计的映射，无需修改工作流代码。
 
 Cross-repository authentication has two supported modes:
 
 - With neither credential configured, the workflow verifies that the sibling reports
-  `private: false`, then checks it out with the job-scoped `github.token`. A missing, renamed, or
-  private sibling fails before checkout with a configuration error.
+  `private: false`, then checks it out with the job-scoped `github.token`. A missing or private
+  mapped sibling fails before checkout with a configuration error.
 - With both credentials configured in a trusted same-repository event, the workflow mints a
-  short-lived installation token restricted to `nexus` with read-only Contents and Metadata
-  access. Configure repository variable `CROSS_REPO_READ_APP_CLIENT_ID` and repository secret
-  `CROSS_REPO_READ_APP_PRIVATE_KEY` together; a partial configuration fails.
+  short-lived installation token restricted to the mapped sibling with read-only Contents and
+  Metadata access. Configure repository variable `CROSS_REPO_READ_APP_CLIENT_ID` and repository
+  secret `CROSS_REPO_READ_APP_PRIVATE_KEY` together; a partial configuration fails.
 - A fork or Dependabot pull request never receives or mints an App token. It can use only the public
   fallback, so a private sibling intentionally requires a trusted maintainer run.
 
 跨仓认证支持两种模式：两个凭据均未配置时，工作流先确认同级仓库返回 `private: false`，再使用任务
-级 `github.token` checkout；仓库缺失、改名或私有时会在 checkout 前给出配置错误。可信的同仓事件中，
-两个凭据均已配置时才签发仅限 `nexus` 且只有 Contents/Metadata 只读权限的短期安装令牌。
+级 `github.token` checkout；映射目标缺失或私有时会在 checkout 前给出配置错误。可信的同仓事件中，
+两个凭据均已配置时才签发仅限映射目标且只有 Contents/Metadata 只读权限的短期安装令牌。
 仓库变量 `CROSS_REPO_READ_APP_CLIENT_ID` 与仓库 secret `CROSS_REPO_READ_APP_PRIVATE_KEY` 必须同时
 配置，缺少任意一项都会失败。fork 或 Dependabot PR 永不接收或签发 App 令牌，只能使用公开回退；
 同级仓库为私有时应由维护者在可信上下文运行。
 
 For private operation, create or reuse a GitHub App under the current owner, grant repository
 Contents read-only access (Metadata read access is implicit), install it only on the fixed client and
-server repositories, and add the Client ID variable and private-key secret to both repositories.
+server logical pair, and add the Client ID variable and private-key secret to both repositories.
 Validate both contract-monitor workflows and a native E2E run before changing visibility. The
 Release App credentials must not be reused, and checkout credentials remain non-persistent.
 
 私有模式下，在当前 owner 创建或复用 GitHub App，仅授予仓库 Contents 只读权限（Metadata 只读为
-固有权限），并只安装到固定的客户端与服务端仓库；随后在两个仓库分别配置 Client ID 变量和私钥
+固有权限），并只安装到映射中的客户端与服务端逻辑仓库；随后在两个仓库分别配置 Client ID 变量和私钥
 secret。切换可见性前，应先验证双端协议监控和一次原生 E2E。不得复用 Release App 凭据，checkout
 凭据也不会持久化。
 

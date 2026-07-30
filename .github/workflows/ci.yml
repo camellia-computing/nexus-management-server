@@ -174,7 +174,7 @@ jobs:
         uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # 1.7.12
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
-          version: 0.11.29
+          version: 0.12.0
           enable-cache: false
       - name: Workflow security
         env:
@@ -334,15 +334,49 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 90
     steps:
-      - name: Resolve sibling authentication
+      - name: Resolve sibling repository and authentication
         id: sibling-auth
         shell: pwsh
         env:
           APP_CLIENT_ID: ${{ vars.CROSS_REPO_READ_APP_CLIENT_ID }}
           APP_PRIVATE_KEY: ${{ secrets.CROSS_REPO_READ_APP_PRIVATE_KEY }}
+          CURRENT_LOGICAL_ID: nexus-management
+          REPOSITORY_MAP: ${{ vars.NEXUS_REPOSITORY_MAP }}
+          SIBLING_LOGICAL_ID: nexus-client
           TRUSTED_CONTEXT: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.actor != 'dependabot[bot]' }}
         run: |
           $ErrorActionPreference = 'Stop'
+          try {
+            $repositoryMap = ConvertFrom-Json -InputObject $env:REPOSITORY_MAP -AsHashtable -NoEnumerate
+          } catch {
+            Write-Output '::error title=Repository map misconfigured::NEXUS_REPOSITORY_MAP must be valid JSON.'
+            exit 1
+          }
+          $expectedKeys = @('nexus-client', 'nexus-management')
+          $missingKeys = @($expectedKeys | Where-Object { -not $repositoryMap.ContainsKey($_) })
+          if ($repositoryMap.Count -ne $expectedKeys.Count -or $missingKeys.Count -ne 0) {
+            Write-Output '::error title=Repository map misconfigured::NEXUS_REPOSITORY_MAP must be the reviewed, complete logical repository map.'
+            exit 1
+          }
+          foreach ($logicalId in $expectedKeys) {
+            $physicalName = $repositoryMap[$logicalId]
+            if ($physicalName -isnot [string] -or
+                $physicalName.Length -lt 1 -or $physicalName.Length -gt 100 -or
+                $physicalName -notmatch '^[A-Za-z0-9._-]+$' -or
+                $physicalName -in @('.', '..')) {
+              Write-Output '::error title=Repository map misconfigured::The repository map contains an invalid physical name.'
+              exit 1
+            }
+          }
+          $currentName = $repositoryMap[$env:CURRENT_LOGICAL_ID]
+          $siblingName = $repositoryMap[$env:SIBLING_LOGICAL_ID]
+          $repositoryParts = $env:GITHUB_REPOSITORY.Split('/', 2)
+          if ($repositoryParts.Count -ne 2 -or
+              -not [string]::Equals($currentName, $repositoryParts[1], [StringComparison]::OrdinalIgnoreCase) -or
+              [string]::Equals($siblingName, $repositoryParts[1], [StringComparison]::OrdinalIgnoreCase)) {
+            Write-Output '::error title=Repository map identity mismatch::The logical repository map does not match the workflow repository.'
+            exit 1
+          }
           $hasClientId = -not [string]::IsNullOrWhiteSpace($env:APP_CLIENT_ID)
           $hasPrivateKey = -not [string]::IsNullOrWhiteSpace($env:APP_PRIVATE_KEY)
           if ($env:TRUSTED_CONTEXT -ne 'true') {
@@ -356,12 +390,14 @@ jobs:
             exit 1
           }
           Add-Content -Path $env:GITHUB_OUTPUT -Value "mode=$mode" -Encoding utf8
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "repository=$env:GITHUB_REPOSITORY_OWNER/$siblingName" -Encoding utf8
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "repository_name=$siblingName" -Encoding utf8
       - name: Verify public desktop repository
         if: ${{ steps.sibling-auth.outputs.mode == 'public' }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          TARGET_REPOSITORY: ${{ github.repository_owner }}/nexus
+          TARGET_REPOSITORY: ${{ steps.sibling-auth.outputs.repository }}
         run: |
           $ErrorActionPreference = 'Stop'
           $headers = @{
@@ -388,13 +424,13 @@ jobs:
           client-id: ${{ vars.CROSS_REPO_READ_APP_CLIENT_ID }}
           private-key: ${{ secrets.CROSS_REPO_READ_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: nexus
+          repositories: ${{ steps.sibling-auth.outputs.repository_name }}
           permission-contents: read
           permission-metadata: read
       - name: Checkout desktop
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: ${{ github.repository_owner }}/nexus
+          repository: ${{ steps.sibling-auth.outputs.repository }}
           ref: ${{ inputs.client-ref || 'main' }}
           path: client
           token: ${{ steps.sibling-token.outputs.token || github.token }}
