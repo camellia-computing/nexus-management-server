@@ -736,15 +736,24 @@ unset expired_sessions
 docker run --detach --name "$worker" "${admin_common[@]}" "${runtime_security[@]}" \
   --env "DATABASE_URL=$admin_worker_database_url" \
   "$image" admin-worker >/dev/null
+worker_ready=0
 for _ in {1..30}; do
   if docker exec "$worker" camellia-nexus-management-server healthcheck \
     http://127.0.0.1:9091/readyz >/dev/null 2>&1; then
+    worker_ready=1
+    break
+  fi
+  if [[ "$(docker inspect --format '{{.State.Running}}' "$worker")" != true ]]; then
     break
   fi
   sleep 1
 done
-docker exec "$worker" camellia-nexus-management-server healthcheck \
-  http://127.0.0.1:9091/readyz >/dev/null
+if [[ "$worker_ready" != 1 ]]; then
+  echo 'Admin Worker failed to become ready' >&2
+  docker logs "$worker" 2>&1 |
+    sed -E 's#postgres://[^[:space:]"]+#postgres://[redacted]#g' >&2
+  exit 1
+fi
 
 for container in "$public" "$admin" "$worker"; do
   test "$(docker inspect --format '{{.Config.User}}' "$container")" = 10001:10001
