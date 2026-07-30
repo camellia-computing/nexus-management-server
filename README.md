@@ -17,7 +17,7 @@ Camellia Nexus Management Server 是 Camellia Nexus 桌面客户端的生产授�
 - 通过 Admin CLI 发放和管理授权码
 - JSON 日志，便于平台采集和审计
 - 与业务入口分离的私有 Prometheus 指标监听器
-- 数据库迁移在受控环境中执行
+- 数据库迁移在受控环境中执行，迁移、公开 API、Admin Web 与 Worker 使用四个独立数据库身份
 
 最小环境变量示例：
 
@@ -25,7 +25,7 @@ Camellia Nexus Management Server 是 Camellia Nexus 桌面客户端的生产授�
 CAMELLIA_NEXUS_LICENSE_ENV=production
 CAMELLIA_NEXUS_LICENSE_BIND=0.0.0.0:8088
 CAMELLIA_NEXUS_LICENSE_STORAGE=postgres
-DATABASE_URL=postgres://camellia:replace-me@postgres:5432/camellia_license
+DATABASE_URL=postgres://nexus_public:replace-with-url-safe-secret@postgres:5432/nexus
 CAMELLIA_NEXUS_LICENSE_ISSUER=https://license.example.com
 CAMELLIA_NEXUS_LICENSE_AUDIENCE=camellia-nexus-desktop
 CAMELLIA_NEXUS_LICENSE_KEY_ID=entitlement-2026-00
@@ -141,11 +141,11 @@ docker compose up -d
 
 管理端创建 Team 邀请、更新成员和撤销邀请均在数据库事务内认领幂等键。若创建邀请的响应在网络中丢失，控制台会保留原操作键，重新取得同一条邀请的短期加密交付，而不会重复占用席位或生成第二名成员；修改了请求内容却复用旧操作键会得到冲突响应。
 
-账户、授权、设备、激活码、账单、批量任务取消和付款凭证也使用相同的持久幂等契约：资源变更、审计和公开响应在一个事务内提交，控制台仅在确认收到业务错误后更换操作键。激活码密文交付可由原操作键重新取得；付款凭证还以声明与文件摘要去重，并由 worker 回收崩溃留下的孤立对象。秘密领取本身由会话绑定领取令牌保护，确认操作可安全重复，不要求伪装成有业务幂等键的写操作。
+账户、授权、设备、激活码、账单、批量任务取消和付款凭证也使用相同的持久幂等契约：资源变更、审计和公开响应在一个事务内提交，控制台仅在确认收到业务错误后更换操作键。最终提交事务会锁定并重新验证管理员身份状态、会话、凭据代际、角色和所需权限；并发撤权要么先使写入失败，要么等待该次已获授权的提交结束。批量 Worker 对每个条目执行同样检查。激活码密文交付可由原操作键重新取得；付款凭证还以声明与文件摘要去重，并由 worker 回收崩溃留下的孤立对象。秘密领取本身由会话绑定领取令牌保护，领取与确认也在提交事务内重新验证对应权限。
 
 完成首次引导后，Platform Owner 可在私有控制台的“管理员身份”页面新增、分配角色、禁用和重置控制面身份。新身份在完成一次性令牌登记密码与 TOTP 前保持 `pending`；禁用会立即撤销全部会话并作废未使用的登记令牌；重置会先移除旧密码、TOTP 和恢复码，再签发新的十分钟登记令牌。身份变更必须具备近期二次验证、操作原因、幂等键和 `If-Match` 行版本；服务端拒绝自我禁用、自我重置以及移除最后一名活跃 Platform Owner。
 
-管理员用户名是创建后不可修改的登录与审计标识；每名活跃管理员均可在个人菜单中修改自己的显示名称和密码，无需获得身份管理权限，但仍须通过近期二次验证、操作原因、幂等键与 `If-Match` 行版本保护。密码修改成功后会撤销该身份的全部管理会话并要求重新登录。若全部在线管理路径不可用，可从受控终端执行 `admin operator recover-owner` 恢复一名 Platform Owner；命令要求精确确认规范化用户名，清除原密码、TOTP、恢复码和会话，将身份置为 `pending`，并只输出一个十分钟有效的重置令牌。若令牌未能交付，可对尚无认证因子的 `pending` Owner 重新执行恢复；新令牌会使此前所有登记令牌失效。该离线命令仅用于恢复控制面访问，不授予产品 Team 权益。
+管理员用户名是创建后不可修改的登录与审计标识；每名活跃管理员均可在个人菜单中修改自己的显示名称和密码，无需获得身份管理权限，但仍须通过近期二次验证、操作原因、幂等键与 `If-Match` 行版本保护。密码修改会原子推进凭据代际并撤销该身份的全部管理会话；即使并发登录已完成旧密码校验，也无法在新代际提交后创建或提升会话。若全部在线管理路径不可用，可从受控终端执行 `admin operator recover-owner` 恢复一名 Platform Owner；命令要求精确确认规范化用户名，清除原密码、TOTP、恢复码和会话，将身份置为 `pending`，并只输出一个十分钟有效的重置令牌。若令牌未能交付，可对尚无认证因子的 `pending` Owner 重新执行恢复；新令牌会使此前所有登记令牌失效。该离线命令仅用于恢复控制面访问，不授予产品 Team 权益。
 
 创建客户账户时会建立唯一且稳定的内部 Team Owner 占位身份，首台注册设备自动绑定到该 Owner。私有控制面可在 Team 工作区中一次性完善其邮箱与显示名称；操作受二次验证、幂等键和 row version 保护，只替换占位资料，不会新建成员、额外占用席位、改变 Owner 角色或改动设备绑定。产品 Team 角色与控制面管理员角色是彼此独立的身份域，Team Owner 不会因此获得 Admin UI 登录能力。
 
@@ -168,7 +168,7 @@ CAMELLIA_NEXUS_CLAMAV_ADDRESS=clamav:3310
 
 转发来源地址默认不受信任。需要记录客户端地址时，反向代理必须先删除外部传入的 `X-Forwarded-For` 与 `X-Camellia-Proxy-Auth`，再写入已验证地址和 32–256 个可见 ASCII 字符的共享密钥；服务端通过 `CAMELLIA_NEXUS_ADMIN_FORWARDED_FOR_SECRET_PATH` 从有界常规文件读取同一密钥并以常量时间校验。未通过认证或不是合法 IP 的转发值不会进入审计记录。管理 origin 只能包含 HTTP(S) scheme 与 authority，不得包含用户名或密码；生产环境必须使用 HTTPS，且不应直接暴露到互联网。
 
-对象存储提供三档统一接口并始终执行对象级 XChaCha20-Poly1305 加密、SHA-256 完整性验证和配额控制：`filesystem` 适合单机小规模，`database` 通过 1 MiB PostgreSQL 分块支持中等规模，`s3` 适合大规模与多副本部署。付款证据只接受签名匹配的 PNG、JPEG、PDF，先进入隔离区；生产环境强制启用 ClamAV，扫描不可用时保持隔离并拒绝付款通过。
+对象存储提供三档统一接口并始终执行对象级 XChaCha20-Poly1305 加密、SHA-256 完整性验证和配额控制：`filesystem` 适合单机小规模，`database` 通过 1 MiB PostgreSQL 分块支持中等规模，`s3` 适合大规模与多副本部署。外部后端写入先持久化 staging 元数据；即使上传响应不确定，worker 也会通过有界 HEAD/GET、密文长度、解密与摘要对账后完成提交或清理，绝不丢失唯一恢复记录。外部读取在分配内存前验证数据库与对象元数据，并在流式读取中执行绝对大小上限。付款证据只接受签名匹配的 PNG、JPEG、PDF，先进入隔离区；生产环境强制启用 ClamAV，扫描不可用时保持隔离并拒绝付款通过。
 
 ### API
 
@@ -333,7 +333,7 @@ camellia-nexus-management-server admin operator recover-owner owner \
 
 `--confirm` 必须与规范化后的目标用户名完全一致。此命令会使现有认证材料立即失效，每次新令牌只在当前输出中显示；若交付失败，可对尚无认证因子的 `pending` Owner 重新执行，新令牌会立即作废此前令牌。命令应只在受控终端执行并安全交付。
 
-人工账单先从报价快照创建 Invoice，再由用户提交付款信息，最后由运营人员审核。只有 `billing payment approve` 的数据库事务成功后才会更新套餐、期限与 license epoch；`submitted`、`needs_information` 或 `rejected` 均不会授予权益。商业报价仅用于 Pro 与 Team。Invoice 席位必须与报价套餐一致：Team 必须显式指定 3 至 10,000 席，Pro 必须为零；服务端会拒绝矛盾输入，不会静默更正商业数据。
+人工账单先从报价快照创建 Invoice，再由用户提交付款信息，最后由运营人员审核。只有 `billing payment approve` 的数据库事务成功后才会更新套餐、期限与 license epoch；`submitted`、`needs_information` 或 `rejected` 均不会授予权益。商业报价仅用于 Pro 与 Team。Invoice 席位必须与报价套餐一致：Team 必须显式指定 3 至 10,000 席，Pro 必须为零；服务端会拒绝矛盾输入，不会静默更正商业数据。账单和付款声明采用默认 50、最大 100 的不透明键集分页；Admin UI 可继续加载，CLI 返回带 `nextCursor` 的页面并接受 `--cursor`、`--page-size` 与 `--query`。
 
 ```bash
 camellia-nexus-management-server admin billing offer create pro-yearly --plan pro --duration-days 365 --currency USD --amount 99 --name-en "Pro yearly" --name-zh "专业版年付" --actor finance_001 --reason "2026 catalog"
@@ -433,15 +433,16 @@ entitlement 签发材料应由部署环境统一管理，轮换策略由发布�
 
 运行与维护配置：
 
-- `GET /healthz` 是不访问外部依赖的进程存活检查；`GET /readyz` 最多等待 2 秒检查 repository 与持久时间权威，并在 PostgreSQL 不可达、连接池无法及时取得连接、必需 schema 缺失或时间前跳保护触发时返回 `503 not ready` 与 `Cache-Control: no-store`
+- `GET /healthz` 是不访问外部依赖的进程存活检查；公开/Admin `GET /readyz` 最多等待 2 秒检查 repository、必需 schema、所需密钥、Admin 恶意软件扫描器与持久时间权威，并在依赖不可用时返回 `503 not ready` 与 `Cache-Control: no-store`
 - `CAMELLIA_NEXUS_HTTP_REQUEST_TIMEOUT_SECONDS`（默认 `15`）限制业务请求总时间；`CAMELLIA_NEXUS_HTTP_MAX_IN_FLIGHT`（默认 `256`）限制进程内并发，超时返回 504，过载返回 503，并附带 `Retry-After: 1`
 - `CAMELLIA_NEXUS_ADMIN_REQUEST_TIMEOUT_SECONDS`（默认 `180`）与 `CAMELLIA_NEXUS_ADMIN_MAX_IN_FLIGHT`（默认 `64`）只限制 `admin-web` 的 `/api/v1`；健康检查和静态资源不占用该预算。超时返回机器可读的 504，过载返回 503，二者均附带 `Retry-After: 1`
 - `CAMELLIA_NEXUS_DATABASE_ACQUIRE_TIMEOUT_SECONDS`（默认 `5`）限制等待 PostgreSQL 连接的时间；`CAMELLIA_NEXUS_DATABASE_MAX_CONNECTIONS`（默认 `8`）限制连接池大小。`serve`、`admin-web` 与 `admin-worker` 对无效值或零值均直接拒绝启动，不会静默使用默认值
-- 每个生产常驻角色都必须设置 `CAMELLIA_NEXUS_METRICS_BIND`。独立运维监听器只提供 `/healthz` 与
-  Prometheus 文本 `/metrics`；默认应绑定回环地址。非回环地址还必须显式设置
+- 每个生产常驻角色都必须设置 `CAMELLIA_NEXUS_METRICS_BIND`。独立运维监听器提供 `/healthz` 与
+  Prometheus 文本 `/metrics`；Admin Worker 还提供持续反映数据库、密钥、扫描器与工作循环状态的
+  `/readyz`，其容器健康检查必须使用该端点。默认应绑定回环地址。非回环地址还必须显式设置
   `CAMELLIA_NEXUS_METRICS_ALLOW_NON_LOOPBACK=true` 并由私有防火墙/入口隔离。`serve`、`admin-web` 与
   `admin-worker` 使用不同端口；指标只含有界的角色、状态码类别与结果标签，绝不包含租户、设备、URL、
-  token 或 operation ID
+  token 或 operation ID。所有指标族使用兼容经典 Prometheus 命名规则的 `camellia_nexus_` 前缀
 - `CAMELLIA_NEXUS_CLIENT_MINIMUM_VERSION`、`CAMELLIA_NEXUS_CLIENT_RECOMMENDED_VERSION` 与 `CAMELLIA_NEXUS_CLIENT_VERSION_ENFORCE_AFTER` 在生产环境均为必填；版本必须是规范 SemVer，执行时间必须是绝对的 RFC3339、UTC 日期/日期时间或 Unix 秒，不接受相对时长。相对时间只允许开发环境和 Admin 有效期输入，避免多副本按各自启动时刻产生不同执行边界
 - PostgreSQL 模式以 `service_time_authority` 单例保存授权时间高水位。每个安全相关请求在写入 code、session 或 entitlement 前原子推进高水位，取数据库时间、持久高水位与进程单调时间的最大安全值；因此数据库或主机时钟回拨以及服务重启都不会让已过期对象重新有效。Admin 写命令遵循同一时间权威；内存模式仅用于开发和测试，不提供跨进程持久保证
 - `CAMELLIA_NEXUS_TIME_MAX_FORWARD_JUMP_SECONDS`（默认 `86400`，即 24 小时）是数据库时间相对持久高水位允许的一次最大前跳。超过该值时服务记录结构化错误、拒绝全部依赖授权时间的操作并使 readiness 失败，且不会接受异常时间。先校正并确认 PostgreSQL UTC 时间；若前跳来自经过核验的长时间停机，可在受控维护窗口临时把该值提高到覆盖实际间隔，待一次成功 readiness 推进高水位后立即恢复默认并重启。不得直接改写时间权威表
@@ -470,6 +471,8 @@ scripts/start-local.sh --help
 
 最终容器、真实 Admin UI 与 Windows 原生客户端的分层验证范围、一次性 Compose 后端和安全清理要求见
 [生产级验证](docs/testing.md)。
+四角色 OS/数据库隔离、secret 所有权与迁移后显式授权见
+[systemd 部署](docs/systemd-deployment.md)；Compose 使用同一数据库边界。
 
 隔离实验可使用内存存储：
 
@@ -496,7 +499,8 @@ Production deployments require:
 - Activation codes issued and managed through the Admin CLI
 - JSON logs for platform ingestion and audit
 - A private Prometheus metrics listener separate from product traffic
-- Database migrations executed in a controlled environment
+- Database migrations executed in a controlled environment, with separate migration, public API,
+  Admin Web, and Worker database identities
 
 Minimum environment:
 
@@ -504,7 +508,7 @@ Minimum environment:
 CAMELLIA_NEXUS_LICENSE_ENV=production
 CAMELLIA_NEXUS_LICENSE_BIND=0.0.0.0:8088
 CAMELLIA_NEXUS_LICENSE_STORAGE=postgres
-DATABASE_URL=postgres://camellia:replace-me@postgres:5432/camellia_license
+DATABASE_URL=postgres://nexus_public:replace-with-url-safe-secret@postgres:5432/nexus
 CAMELLIA_NEXUS_LICENSE_ISSUER=https://license.example.com
 CAMELLIA_NEXUS_LICENSE_AUDIENCE=camellia-nexus-desktop
 CAMELLIA_NEXUS_LICENSE_KEY_ID=entitlement-2026-00
@@ -533,7 +537,11 @@ CAMELLIA_NEXUS_MAINTENANCE_INTERVAL_SECONDS=3600
 CAMELLIA_NEXUS_CLEANUP_BATCH_SIZE=1000
 ```
 
-Activation codes are stored in PostgreSQL as hashes and are managed by the Admin CLI. Production always rejects static environment activation codes; `CAMELLIA_NEXUS_LICENSE_ACTIVATION_CODES` is reserved for development environments.
+Activation codes are stored in PostgreSQL as hashes and are managed by the Admin CLI. Production
+always rejects static environment activation codes; `CAMELLIA_NEXUS_LICENSE_ACTIVATION_CODES` is
+reserved for development environments. The [systemd deployment contract](docs/systemd-deployment.md)
+defines the same four OS/database trust boundaries used by Compose, including secret ownership and
+post-migration grants.
 
 ### Container image and deployment
 
@@ -550,10 +558,14 @@ Server and client versions advance independently. The server publishes canonical
 Container deployment notes:
 
 - The current production image contract supports `linux/amd64` only. The ClamAV dependency and formal build both declare that architecture; unverified compatibility architectures are not promised.
-- Use `docker-compose.yml` as the production deployment template and replace the image owner, database password, issuer URL and OAuth redirect URI allow-list
+- Use `docker-compose.yml` as the production deployment template and set independently generated
+  migration, public, Admin Web, and Worker database passwords, plus the image coordinate, issuer URL,
+  and OAuth redirect URI allow-list
 - Place the issuance PEM at the compose secret path. The default example is `./secrets/entitlement-es256-private.pem`
 - Local file-backed Compose secrets preserve host ownership. The application image runs as `10001:10001`, so every private secret file must be owned by `10001:10001` with mode `0400`; restrict the `secrets/` directory to the deployment account with mode `0700`. Never work around a permissions failure by making secrets globally readable with mode `0444`
-- PostgreSQL uses `postgres:18-alpine` pinned to an immutable digest, with data mounted at `/var/lib/postgresql`
+- PostgreSQL uses `postgres:18-alpine` pinned to an immutable digest, with data mounted at
+  `/var/lib/postgresql`; its first-start hook creates only the three unprivileged runtime logins, and
+  the migration command applies the explicit per-table grants
 - The service example binds only to localhost; production ingress should terminate HTTPS through a reverse proxy
 - `docker-compose.yml` explicitly disables application-startup migrations; run a controlled one-shot migration before starting or rolling the service
 - Use `GET /healthz` and `GET /readyz` after startup. Inside the container, run `camellia-nexus-management-server healthcheck http://127.0.0.1:<port>/readyz`. Give SIGTERM at least a 30-second stop window.
@@ -621,11 +633,11 @@ Administrator sessions have a 30-minute idle limit and a non-renewable eight-hou
 
 Administrative Team invitation creation, member updates and invitation revocation claim their idempotency keys inside the database transaction. If an invitation response is lost in transit, the console retains the original operation key and recovers the same short-lived encrypted delivery without consuming another seat or creating another member. Reusing that key with changed request data returns a conflict.
 
-Accounts, licenses, devices, activation codes, billing records, bulk-job cancellation and payment evidence follow the same persistent operation contract: the resource change, audit record and public response commit atomically, and the console rotates an operation key only after a definite business error. Activation-code deliveries can be reconstructed from the original operation; evidence is additionally deduplicated by claim and digest, while the worker removes objects orphaned by a crash. Secret claim tokens are already session-bound business keys, and acknowledgement is safely repeatable without pretending that a separate idempotency key controls it.
+Accounts, licenses, devices, activation codes, billing records, bulk-job cancellation and payment evidence follow the same persistent operation contract: the resource change, audit record and public response commit atomically, and the console rotates an operation key only after a definite business error. The final commit transaction locks and rechecks administrator status, session, credential epoch, roles, and the exact permission. A concurrent revocation either wins and rejects the write or waits for the already-authorized commit; the bulk worker performs the same check for every item. Activation-code deliveries can be reconstructed from the original operation; evidence is additionally deduplicated by claim and digest, while the worker removes objects orphaned by a crash. Secret claim tokens are session-bound business keys, and both claim and acknowledgement recheck their corresponding permission in the committing transaction.
 
 After bootstrap, Platform Owners manage additional control-plane identities from **Administrators** in the private console. New identities remain `pending` until their one-time enrollment token is delivered through the encrypted secret-delivery flow and they configure a password plus TOTP. Disabling an identity immediately revokes its sessions and outstanding enrollment tokens. Credential reset also removes the old password, TOTP and recovery codes before issuing a new ten-minute enrollment token. Identity mutations require recent step-up authentication, an audit reason, an idempotency key and an `If-Match` row version; self-disable/self-reset and removal of the final active Platform Owner are rejected.
 
-An administrator username is an immutable sign-in and audit identifier. Every active administrator can change their own display name and password from the user menu without identity-management permission, while recent step-up, an audit reason, idempotency and an `If-Match` row version remain mandatory. A successful password change revokes all sessions for that identity and requires a fresh sign-in. If every online administration path is unavailable, a controlled terminal may run `admin operator recover-owner` for a Platform Owner. Exact normalized-username confirmation is required; the operation clears the password, TOTP, recovery codes and sessions, moves the identity to `pending`, and prints one ten-minute reset token. If delivery fails, recovery may be run again for a pending Owner with no authentication factors; the replacement invalidates every earlier enrollment token. This offline recovery restores control-plane access only and never grants a product Team entitlement.
+An administrator username is an immutable sign-in and audit identifier. Every active administrator can change their own display name and password from the user menu without identity-management permission, while recent step-up, an audit reason, idempotency and an `If-Match` row version remain mandatory. A successful password change atomically advances the credential epoch and revokes every session for that identity; even a concurrent login that already verified the old password cannot create or elevate a session after the new epoch commits. If every online administration path is unavailable, a controlled terminal may run `admin operator recover-owner` for a Platform Owner. Exact normalized-username confirmation is required; the operation clears the password, TOTP, recovery codes and sessions, moves the identity to `pending`, and prints one ten-minute reset token. If delivery fails, recovery may be run again for a pending Owner with no authentication factors; the replacement invalidates every earlier enrollment token. This offline recovery restores control-plane access only and never grants a product Team entitlement.
 
 Account creation establishes one stable internal Team Owner placeholder, and the first registered device is bound to that Owner. The private Team control plane can complete its email and display name once, guarded by step-up, idempotency and row version. Completion only replaces placeholder profile fields: it does not create a member, consume another seat, change the Owner role or alter device bindings. Product Team roles and private control-plane roles are independent identity domains; a Team Owner does not thereby receive Admin UI access.
 
@@ -647,7 +659,7 @@ CAMELLIA_NEXUS_CLAMAV_ADDRESS=clamav:3310
 
 Forwarded addresses are ignored by default. To record them, the proxy must strip incoming `X-Forwarded-For` and `X-Camellia-Proxy-Auth`, inject a verified address and a shared secret of 32–256 visible ASCII characters, and the server must read that same secret from the bounded regular file named by `CAMELLIA_NEXUS_ADMIN_FORWARDED_FOR_SECRET_PATH`. Unauthenticated or malformed values never enter audit records. The Admin origin may contain only an HTTP(S) scheme and authority, never a username or password. It must use HTTPS in production and should remain private.
 
-Object storage provides encrypted `filesystem`, PostgreSQL `database` (1 MiB chunks), and `s3` backends for small, medium and large deployments. Every object has a random data key, XChaCha20-Poly1305 encryption, SHA-256 validation and quota enforcement. Payment evidence is signature-checked, quarantined and scanned; production refuses to start with scanning disabled, and payment approval fails closed unless every attachment is clean.
+Object storage provides encrypted `filesystem`, PostgreSQL `database` (1 MiB chunks), and `s3` backends for small, medium and large deployments. Every object has a random data key, XChaCha20-Poly1305 encryption, SHA-256 validation and quota enforcement. External writes persist staging metadata first; even when an upload response is ambiguous, the worker retains the unique recovery record and uses bounded HEAD/GET, ciphertext length, decryption and digest checks to finalize or remove it. External reads validate database and object metadata before allocation and enforce an absolute cap while streaming. Payment evidence is signature-checked, quarantined and scanned; production refuses to start with scanning disabled, and payment approval fails closed unless every attachment is clean.
 
 ### API
 
@@ -823,7 +835,7 @@ camellia-nexus-management-server admin operator recover-owner owner \
 
 `--confirm` must exactly match the normalized target username. The command immediately invalidates existing authentication material and shows each new reset token only in that invocation. If delivery fails, it may be run again for a pending Owner with no authentication factors; the replacement immediately invalidates every earlier token. Run it only from a controlled terminal and deliver the token securely.
 
-Manual billing creates an invoice from an immutable offer snapshot, accepts customer payment evidence, and then requires an operator review. Only a committed `billing payment approve` transaction changes the plan, term, and license epoch; submitted, needs-information, and rejected claims grant no entitlement. Commercial offers apply only to Pro and Team. Invoice seats must match the offer plan: Team requires an explicit quantity from 3 through 10,000, while Pro requires zero. The service rejects contradictory input instead of silently rewriting commercial data.
+Manual billing creates an invoice from an immutable offer snapshot, accepts customer payment evidence, and then requires an operator review. Only a committed `billing payment approve` transaction changes the plan, term, and license epoch; submitted, needs-information, and rejected claims grant no entitlement. Commercial offers apply only to Pro and Team. Invoice seats must match the offer plan: Team requires an explicit quantity from 3 through 10,000, while Pro requires zero. The service rejects contradictory input instead of silently rewriting commercial data. Invoice and payment-claim lists use opaque keyset pages of 50 by default and 100 at most. The Admin UI loads subsequent pages explicitly; the CLI returns `nextCursor` and accepts `--cursor`, `--page-size`, and `--query`.
 
 ```bash
 camellia-nexus-management-server admin billing offer create pro-yearly --plan pro --duration-days 365 --currency USD --amount 99 --name-en "Pro yearly" --name-zh "专业版年付" --actor finance_001 --reason "2026 catalog"
@@ -923,15 +935,18 @@ Logging configuration:
 
 Runtime and maintenance configuration:
 
-- `GET /healthz` is process liveness and does not touch external dependencies. `GET /readyz` waits at most two seconds for the repository and persistent-time checks, and returns `503 not ready` with `Cache-Control: no-store` when PostgreSQL is unavailable, a pool connection cannot be obtained promptly, required schema is absent, or forward-jump protection is active
+- `GET /healthz` is process liveness and does not touch external dependencies. Public/Admin `GET /readyz` waits at most two seconds for the repository, required schema, required key material, Admin malware scanner, and persistent-time checks, returning `503 not ready` with `Cache-Control: no-store` when a dependency is unavailable
 - `CAMELLIA_NEXUS_HTTP_REQUEST_TIMEOUT_SECONDS` (default `15`) bounds total business-request time. `CAMELLIA_NEXUS_HTTP_MAX_IN_FLIGHT` (default `256`) bounds per-process concurrency. Timeouts return 504; overload returns 503; both include `Retry-After: 1`
 - `CAMELLIA_NEXUS_ADMIN_REQUEST_TIMEOUT_SECONDS` (default `180`) and `CAMELLIA_NEXUS_ADMIN_MAX_IN_FLIGHT` (default `64`) apply only to `admin-web` `/api/v1`; health checks and static assets do not consume this budget. Timeout is a machine-readable 504 and overload a 503, both with `Retry-After: 1`
 - `CAMELLIA_NEXUS_DATABASE_ACQUIRE_TIMEOUT_SECONDS` (default `5`) bounds PostgreSQL pool waits, while `CAMELLIA_NEXUS_DATABASE_MAX_CONNECTIONS` (default `8`) bounds pool size. `serve`, `admin-web`, and `admin-worker` all reject invalid or zero values at startup instead of silently using defaults
-- `CAMELLIA_NEXUS_METRICS_BIND` is required for every production runtime role. It serves only `/healthz`
-  and Prometheus text at `/metrics` on a separate operations listener. Loopback is the safe default;
+- `CAMELLIA_NEXUS_METRICS_BIND` is required for every production runtime role. The separate operations
+  listener serves `/healthz` and Prometheus text at `/metrics`; the Admin Worker additionally exposes
+  `/readyz` with its continuously observed database, keyring, scanner, and iteration state, and its
+  container health check must use that endpoint. Loopback is the safe default;
   a non-loopback address also requires `CAMELLIA_NEXUS_METRICS_ALLOW_NON_LOOPBACK=true` and a private
   firewall/ingress. Use separate ports for `serve`, `admin-web`, and `admin-worker`. Metrics expose
-  bounded role/status/outcome labels and never tenant, device, URL, token, or operation identifiers
+  bounded role/status/outcome labels and never tenant, device, URL, token, or operation identifiers.
+  Every metric family uses the classic-compatible `camellia_nexus_` prefix
 - `CAMELLIA_NEXUS_CLIENT_MINIMUM_VERSION`, `CAMELLIA_NEXUS_CLIENT_RECOMMENDED_VERSION`, and `CAMELLIA_NEXUS_CLIENT_VERSION_ENFORCE_AFTER` are all required in production; versions must be canonical SemVer and the enforcement time must be an absolute RFC3339 instant, UTC date/date-time, or Unix second value. Relative durations are accepted only in development and for Admin expiry inputs, preventing replicas from resolving policy boundaries from different startup times
 - PostgreSQL mode stores the licensing-time high-water mark in the `service_time_authority` singleton. Before a security-sensitive request writes a code, session or entitlement, it atomically advances that mark using the safe maximum of database time, the persisted high water and process-monotonic time. Database or host-clock rollback, including across a service restart, therefore cannot make expired objects valid again. Admin mutations use the same authority. Memory mode is development/test-only and has no cross-process persistence guarantee
 - `CAMELLIA_NEXUS_TIME_MAX_FORWARD_JUMP_SECONDS` (default `86400`, or 24 hours) is the largest single database-time advance accepted beyond the persisted high water. A larger advance is logged, all operations that depend on licensing time fail closed, readiness fails, and the suspect value is not trusted. First correct and verify PostgreSQL UTC time. If a verified long outage caused the gap, temporarily raise the limit during a controlled maintenance window, wait for one successful readiness check to advance the high water, then restore the default and restart. Never edit the time-authority table directly

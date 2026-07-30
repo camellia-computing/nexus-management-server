@@ -12,8 +12,8 @@ server-side authorization.
 | Layer / 层级 | Required proof / 必须证明 |
 | --- | --- |
 | Rust unit and service tests | Parsing, cryptography, state transitions, permissions, idempotency, pagination, errors, and bounded behavior |
-| PostgreSQL integration | Transactions, row versions, trusted time, replica-safe rate limits, migrations, concurrency, jobs, and persistence |
-| Deployment contracts | Four-role systemd ordering/hardening, private per-role metrics, and production configuration failure modes |
+| PostgreSQL integration | Transactions, row versions, trusted time, replica-safe rate limits, migrations, concurrency, jobs, persistence, and external-object ambiguity reconciliation |
+| Deployment contracts | Four distinct OS and database identities, systemd ordering/hardening, private per-role metrics, denied public access to Admin data/DDL, and production configuration failure modes |
 | Admin UI deterministic browser tests | Themes, localization, responsive/overflow states, dialogs, keyboard/focus, errors, PWA installation metadata, and interactions across fixed fixtures |
 | Final-container runtime | Image metadata, migrations, CLI mutations, public and Admin roles, PWA/static headers, hardening, readiness, worker startup, real authentication, Team operations, and logout |
 | Live Admin UI | The static UI embedded in the final image performs real authentication/step-up, account/license/code/Team/billing/bulk/support mutations, conflict recovery, audit/system checks, credential maintenance, accessibility/responsive checks, and logout |
@@ -45,16 +45,20 @@ Chromium installation:
 CAMELLIA_NEXUS_RUN_ADMIN_UI_LIVE=1 scripts/test-container-runtime.sh <locally-loaded-image>
 ```
 
-The runtime test creates an isolated PostgreSQL database, enrollment factors and sessions, accounts,
-Team licenses, one-time deliveries, billing fixtures, a synthetic PDF, a pinned ClamAV scanner, worker,
-and hardened runtime containers. A disposable pre-expired browser session proves the real step-up
+The runtime test creates an isolated PostgreSQL database with a schema owner plus three
+least-privilege runtime logins, enrollment factors and sessions, accounts, Team licenses, one-time
+deliveries, billing fixtures, a synthetic PDF, a pinned ClamAV scanner, worker, and hardened runtime
+containers. It proves the public login cannot read Admin identities or create schema objects and the
+Worker cannot read password credentials. A disposable pre-expired browser session proves the real step-up
 dialog and retry retain one operation identity. The live browser also proves one-time secret
 destruction, optimistic concurrency, evidence scanning and payment approval, bounded bulk work,
 restricted support permissions, audit/system views, password rotation, session revocation, and logout.
-All generated credentials live under a mode-0700 temporary directory and are removed by the exit
-trap. Network traces are disabled and failure screenshots blur authentication and one-time values. Do
-not add debug output that prints request bodies, cookies, TOTP material, delivery tokens, or plaintext
-codes.
+Generated credentials are staged under a mode-0700 host directory and copied without plaintext
+command-line arguments into a uniquely named ephemeral Docker volume. The exit trap removes both,
+including on a failed assertion. This avoids host bind-path differences between native Linux and
+Docker Desktop under WSL. Network traces are disabled and failure screenshots blur authentication
+and one-time values. Do not add debug output that prints request bodies, cookies, TOTP material,
+delivery tokens, or plaintext codes.
 
 The deterministic browser gate also verifies the manifest, exact icon dimensions, service-worker
 registration/update, and Cache Storage allow-list. Its offline check requires immutable application
@@ -71,12 +75,41 @@ post-commit lost response and proves the visible retry sends the same request an
 recovers the original secret. These tests complement, rather than replace, final-container and native
 Windows coverage.
 
+Control-plane PostgreSQL tests also revoke a role after request authentication and prove the final
+business transaction creates neither the resource nor its operation record. Billing integration
+tests traverse opaque invoice cursors across equal-sized pages and search a bounded payment-claim
+page, while browser coverage exercises explicit **Load more** state.
+
+Operations-listener tests keep liveness independent from Worker readiness and drive readiness through
+unready, ready, and recovered-failure states. A bounded fake ClamAV endpoint verifies the exact
+`zPING`/`PONG` dependency probe used at startup and during continuous Worker checks. Worker keyring
+readiness inventories only the enrollment, secret-delivery, and stored-object references available
+to its least-privilege database role; the final-container test proves that role starts without access
+to password or TOTP credential tables. The PostgreSQL role integration test assumes the actual Worker
+role and runs both shared and Admin schema readiness, preventing privilege-filtered catalog views from
+being mistaken for missing migrations.
+
+Object-storage fault-injection tests use a fake external backend to commit bytes before returning a
+failed `put`, proving that the staging metadata survives and the worker can authenticate and finalize
+the object. The same fake replaces a valid object with an oversized body and can falsify HEAD/GET
+lengths, proving that metadata preflight prevents an unnecessary body request and that the streaming
+hard cap remains authoritative when remote metadata is wrong.
+
+对象存储故障注入测试使用 fake 外部后端，在字节已经提交后让 `put` 返回失败，以证明 staging
+元数据会被保留，worker 能认证并完成对象提交。同一 fake 还会用超大正文替换合法对象并伪造
+HEAD/GET 长度，以证明元数据预检可避免不必要的正文请求，且远端元数据错误时流式绝对上限仍然有效。
+
 运行时测试会创建隔离的 PostgreSQL 数据库、管理员注册因素与会话、账户、Team 授权、一次性交付、
 账单夹具、合成 PDF、固定 ClamAV 扫描器、Worker 和加固容器。一次性预过期浏览器会话验证真实
 step-up 对话框及重试沿用同一操作标识；真实浏览器还验证一次性密钥销毁、乐观并发、证据扫描与付款
-批准、有界批处理、受限支持权限、审计/系统视图、密码轮换、会话撤销及退出。全部临时凭据只存在于
-权限为 0700 的临时目录，并由退出清理器删除；网络 trace 被禁用，失败截图会模糊认证与一次性值。
-不得增加会打印请求正文、Cookie、TOTP、交付令牌或明文激活码的调试输出。
+批准、有界批处理、受限支持权限、审计/系统视图、密码轮换、会话撤销及退出。生成凭据先进入权限为
+0700 的宿主机临时目录，再通过标准输入复制到名称唯一的临时 Docker 卷，退出清理器会在成功或断言
+失败时同时删除两者，从而兼容原生 Linux 与 WSL 下的 Docker Desktop，且不把明文放入命令行参数。
+网络 trace 被禁用，失败截图会模糊认证与一次性值。不得增加会打印请求正文、Cookie、TOTP、交付
+令牌或明文激活码的调试输出。Worker 的密钥就绪检查仅盘点其最小权限角色可访问的注册状态、秘密
+交付和对象引用；最终容器测试同时证明 Worker 无权读取密码/TOTP 表但仍可正常启动。PostgreSQL
+角色集成测试还会切换到真实 Worker 角色执行共享与 Admin schema readiness，避免把权限过滤后的
+目录视图误判为迁移缺失。
 
 确定性浏览器门禁还会验证 manifest、精确图标尺寸、Service Worker 注册/更新及 Cache Storage
 白名单。断网检查要求带哈希的应用资源仍可读取，而导航、manifest、外观初始化脚本、管理 API 与
@@ -118,43 +151,46 @@ test、权威层测试、最终容器流程和原生跨仓场景全部通过后�
 
 ## Cross-repository access / 跨仓库访问
 
-The Windows native job and contract monitor resolve the sibling as
-`${{ github.repository_owner }}/nexus`. The repository name is fixed while the owner follows
-the repository executing the workflow, so an account transfer or same-name backup does not require a
-workflow edit. The GitHub App display name is not an interface and may differ between owners.
+The Windows native job and contract monitor read the organization variable
+`NEXUS_REPOSITORY_MAP`, bind the current checkout to logical ID
+`nexus-management`, and resolve sibling logical ID `nexus-client`. The map must
+contain exactly the reviewed pair with valid, distinct physical names; a
+missing, malformed, or stale map fails before authentication. The owner follows
+the repository running the workflow. A rename therefore updates the centrally
+audited map rather than workflow code.
 
-Windows 原生任务与协议监控始终将同级仓库解析为
-`${{ github.repository_owner }}/nexus`。仓库名固定，owner 跟随当前工作流所在仓库，因此账户
-迁移或其他 owner 下的同名备份无需修改工作流。GitHub App 的显示名称不属于接口，不同 owner 可以
-使用不同名称。
+Windows 原生任务与协议监控读取组织变量 `NEXUS_REPOSITORY_MAP`，将当前仓库绑定到逻辑 ID
+`nexus-management`，并解析同级逻辑 ID `nexus-client`。映射必须精确包含经审核的双仓、名称合法且
+互不相同；缺失、格式错误或过期时会在认证前失败。owner 始终跟随当前工作流仓库，仓库改名只需同步
+更新集中审计的映射，无需修改工作流代码。
 
 Cross-repository authentication has two supported modes:
 
 - With neither credential configured, the workflow verifies that the sibling reports
-  `private: false`, then checks it out with the job-scoped `github.token`. A missing, renamed, or
-  private sibling fails before checkout with a configuration error.
+  `private: false`, then checks it out with the job-scoped `github.token`. A missing or private
+  mapped sibling fails before checkout with a configuration error.
 - With both credentials configured in a trusted same-repository event, the workflow mints a
-  short-lived installation token restricted to `nexus` with read-only Contents and Metadata
-  access. Configure repository variable `CROSS_REPO_READ_APP_CLIENT_ID` and repository secret
-  `CROSS_REPO_READ_APP_PRIVATE_KEY` together; a partial configuration fails.
+  short-lived installation token restricted to the mapped sibling with read-only Contents and
+  Metadata access. Configure repository variable `CROSS_REPO_READ_APP_CLIENT_ID` and repository
+  secret `CROSS_REPO_READ_APP_PRIVATE_KEY` together; a partial configuration fails.
 - A fork or Dependabot pull request never receives or mints an App token. It can use only the public
   fallback, so a private sibling intentionally requires a trusted maintainer run.
 
 跨仓认证支持两种模式：两个凭据均未配置时，工作流先确认同级仓库返回 `private: false`，再使用任务
-级 `github.token` checkout；仓库缺失、改名或私有时会在 checkout 前给出配置错误。可信的同仓事件中，
-两个凭据均已配置时才签发仅限 `nexus` 且只有 Contents/Metadata 只读权限的短期安装令牌。
+级 `github.token` checkout；映射目标缺失或私有时会在 checkout 前给出配置错误。可信的同仓事件中，
+两个凭据均已配置时才签发仅限映射目标且只有 Contents/Metadata 只读权限的短期安装令牌。
 仓库变量 `CROSS_REPO_READ_APP_CLIENT_ID` 与仓库 secret `CROSS_REPO_READ_APP_PRIVATE_KEY` 必须同时
 配置，缺少任意一项都会失败。fork 或 Dependabot PR 永不接收或签发 App 令牌，只能使用公开回退；
 同级仓库为私有时应由维护者在可信上下文运行。
 
 For private operation, create or reuse a GitHub App under the current owner, grant repository
 Contents read-only access (Metadata read access is implicit), install it only on the fixed client and
-server repositories, and add the Client ID variable and private-key secret to both repositories.
+server logical pair, and add the Client ID variable and private-key secret to both repositories.
 Validate both contract-monitor workflows and a native E2E run before changing visibility. The
 Release App credentials must not be reused, and checkout credentials remain non-persistent.
 
 私有模式下，在当前 owner 创建或复用 GitHub App，仅授予仓库 Contents 只读权限（Metadata 只读为
-固有权限），并只安装到固定的客户端与服务端仓库；随后在两个仓库分别配置 Client ID 变量和私钥
+固有权限），并只安装到映射中的客户端与服务端逻辑仓库；随后在两个仓库分别配置 Client ID 变量和私钥
 secret。切换可见性前，应先验证双端协议监控和一次原生 E2E。不得复用 Release App 凭据，checkout
 凭据也不会持久化。
 

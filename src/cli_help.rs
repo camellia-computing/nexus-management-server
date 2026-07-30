@@ -140,10 +140,10 @@ const ADMIN_COMMANDS: &[AdminCommand] = &[
     AdminCommand {
         group: "billing",
         name: "invoice list",
-        usage: "billing invoice list [--account <account-id>]",
-        summary_en: "List invoices, optionally scoped to an account.",
-        summary_zh: "列出账单，可选择限定到指定账号。",
-        options: &["account"],
+        usage: "billing invoice list [--account <account-id>] [--query <text>] [--cursor <opaque>] [--page-size <1..100>]",
+        summary_en: "List one bounded invoice page, optionally scoped to an account or search query.",
+        summary_zh: "列出一页有界账单，可按账号或搜索内容筛选。",
+        options: &["account", "query", "cursor", "page-size"],
         example: "billing invoice list --account acct_customer_001",
     },
     AdminCommand {
@@ -160,10 +160,10 @@ const ADMIN_COMMANDS: &[AdminCommand] = &[
     AdminCommand {
         group: "billing",
         name: "payment list",
-        usage: "billing payment list [--status <state>]",
-        summary_en: "List manual payment claims, optionally filtered by review state.",
-        summary_zh: "列出人工付款声明，可选择按审核状态筛选。",
-        options: &["status"],
+        usage: "billing payment list [--status <state>] [--query <text>] [--cursor <opaque>] [--page-size <1..100>]",
+        summary_en: "List one bounded manual-payment page, optionally filtered by review state or search query.",
+        summary_zh: "列出一页有界人工付款声明，可按审核状态或搜索内容筛选。",
+        options: &["status", "query", "cursor", "page-size"],
         example: "billing payment list --status submitted",
     },
     AdminCommand {
@@ -456,6 +456,24 @@ const HELP_OPTIONS: &[HelpOption] = &[
         value: "<account-id>",
         summary_en: "Limit or bind the operation to an account.",
         summary_zh: "将操作限定或绑定到指定账号。",
+    },
+    HelpOption {
+        name: "query",
+        value: "<text>",
+        summary_en: "Case-insensitive search text; maximum 128 characters.",
+        summary_zh: "不区分大小写的搜索文本，最多 128 个字符。",
+    },
+    HelpOption {
+        name: "cursor",
+        value: "<opaque>",
+        summary_en: "Opaque continuation cursor returned by the preceding page.",
+        summary_zh: "上一页返回的不透明续页游标。",
+    },
+    HelpOption {
+        name: "page-size",
+        value: "<1..100>",
+        summary_en: "Bounded page size; defaults to 50.",
+        summary_zh: "有界页大小，默认 50。",
     },
     HelpOption {
         name: "license",
@@ -769,8 +787,10 @@ USAGE / 用法:
   camellia-nexus-management-server migrate
 
 BEHAVIOR / 行为:
-  Applies every pending append-only migration, verifies schema readiness, and exits.
-  应用全部待执行的追加式迁移，验证数据库结构已就绪后退出。
+  Applies every pending append-only migration, replaces ambient database privileges
+  with explicit per-runtime grants, verifies schema readiness, and exits.
+  应用全部待执行的追加式迁移，以显式的逐角色授权替换数据库环境权限，
+  验证数据库结构已就绪后退出。
 
   Run this one-shot role with the same immutable artifact before starting or rolling
   any long-running service role. Never rewrite an applied migration or its SQLx record.
@@ -779,14 +799,19 @@ BEHAVIOR / 行为:
 
 REQUIRED ENVIRONMENT / 必需环境:
   DATABASE_URL                PostgreSQL connection URL / PostgreSQL 连接地址
+  CAMELLIA_NEXUS_DATABASE_PUBLIC_ROLE
+  CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_ROLE
+  CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_ROLE
+                              Three distinct unprivileged login roles in production
+                              生产环境中的三个独立无特权登录角色
 
 RELATED ENVIRONMENT / 相关环境:
   CAMELLIA_NEXUS_LICENSE_ENV        development | production
   CAMELLIA_NEXUS_LOG_LEVEL          Runtime log level / 运行日志级别
   CAMELLIA_NEXUS_LOG_FORMAT         compact | json
 
-See README.md for deployment order and migration recovery rules.
-部署顺序及迁移恢复规则见 README.md。"#),
+See docs/systemd-deployment.md for role provisioning, deployment order, and recovery.
+角色创建、部署顺序及恢复规则见 docs/systemd-deployment.md。"#),
         "healthcheck" => Ok(r#"Camellia Nexus Management Server — healthcheck
 Probe one local process endpoint / 探测一个本机进程端点
 

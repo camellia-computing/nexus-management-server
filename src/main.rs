@@ -263,13 +263,23 @@ async fn run(action: CliAction) -> Result<(), Box<dyn std::error::Error>> {
         return camellia_nexus_management_server::admin_jobs::run_admin_worker().await;
     }
     if action == CliAction::Migrate {
+        let environment = camellia_nexus_management_server::config::Environment::from_env()?;
         let database_url = std::env::var("DATABASE_URL")?;
         let repository =
             PostgresRepository::connect(&database_url, 1, std::time::Duration::from_secs(15))
                 .await?;
         repository.migrate().await?;
+        let grants_applied =
+            camellia_nexus_management_server::database_roles::apply_runtime_database_grants(
+                &repository,
+                environment,
+            )
+            .await?;
         repository.readiness_check().await?;
-        tracing::info!("database migrations completed and schema is ready");
+        tracing::info!(
+            grants_applied,
+            "database migrations completed and schema is ready"
+        );
         return Ok(());
     }
 

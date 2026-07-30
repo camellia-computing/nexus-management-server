@@ -11,8 +11,9 @@ use zeroize::Zeroizing;
 use crate::{
     admin_app::{AdminAppError, AdminApplication, AdminPrincipal, MutationContext},
     admin_auth::{
-        AdminAuthError, AdminAuthResult, AdminKeyring, AdminRole, AdminUser,
-        insert_enrollment_token, normalize_username, validate_display_name,
+        AdminAuthError, AdminAuthResult, AdminKeyring, AdminPermission, AdminRole, AdminUser,
+        authorize_admin_mutation, insert_enrollment_token, normalize_username,
+        validate_display_name,
     },
     admin_operation,
     crypto::{random_id, random_secret, sha256_hex},
@@ -185,6 +186,8 @@ impl AdminIdentityService {
             .await
             .map_err(|_| ApiError::Database)?;
         lock_identity_mutations(&mut tx).await?;
+        authorize_admin_mutation(&mut tx, context, AdminPermission::IdentityManage, true, now)
+            .await?;
         if let Some(response) = admin_operation::claim::<IdentityOperationResponse>(
             &mut tx,
             IDENTITY_OPERATION_COMMAND_CREATE,
@@ -391,6 +394,18 @@ impl AdminIdentityService {
             .await
             .map_err(|_| ApiError::Database)?;
         lock_identity_mutations(&mut tx).await?;
+        authorize_admin_mutation(
+            &mut tx,
+            context,
+            if user_id == context.principal.id {
+                AdminPermission::ProfileWrite
+            } else {
+                AdminPermission::IdentityManage
+            },
+            true,
+            now,
+        )
+        .await?;
         if let Some(response) = admin_operation::claim::<IdentityOperationResponse>(
             &mut tx,
             IDENTITY_OPERATION_COMMAND_UPDATE,
@@ -465,6 +480,8 @@ impl AdminIdentityService {
             .await
             .map_err(|_| ApiError::Database)?;
         lock_identity_mutations(&mut tx).await?;
+        authorize_admin_mutation(&mut tx, context, AdminPermission::IdentityManage, true, now)
+            .await?;
         if let Some(response) = admin_operation::claim::<IdentityOperationResponse>(
             &mut tx,
             IDENTITY_OPERATION_COMMAND_DISABLE,
@@ -526,6 +543,8 @@ impl AdminIdentityService {
             .await
             .map_err(|_| ApiError::Database)?;
         lock_identity_mutations(&mut tx).await?;
+        authorize_admin_mutation(&mut tx, context, AdminPermission::IdentityManage, true, now)
+            .await?;
         if let Some(response) = admin_operation::claim::<IdentityOperationResponse>(
             &mut tx,
             IDENTITY_OPERATION_COMMAND_RESET,
@@ -970,7 +989,9 @@ mod tests {
                 .await
                 .expect("connect PostgreSQL");
         repository.migrate().await.expect("run migrations");
-        let application = AdminApplication::new(repository.clone(), 24 * 60 * 60);
+        let application = AdminApplication::new(repository.clone(), 24 * 60 * 60)
+            .await
+            .expect("initialize admin application");
         let keyring = Arc::new(AdminKeyring::ephemeral());
         let service = AdminIdentityService::new(application.clone(), keyring);
         let now = application.trusted_now().await.unwrap();
@@ -985,6 +1006,16 @@ mod tests {
         )
         .bind(&actor_id)
         .bind(format!("owner-{suffix}"))
+        .bind(now)
+        .execute(&repository.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO admin_password_credentials
+             (user_id, password_hash, key_id, changed_at)
+             VALUES ($1, 'test-only-hash', 'test-only-key', $2)",
+        )
+        .bind(&actor_id)
         .bind(now)
         .execute(&repository.pool)
         .await
@@ -1083,7 +1114,9 @@ mod tests {
                 .await
                 .expect("connect PostgreSQL");
         repository.migrate().await.expect("run migrations");
-        let application = AdminApplication::new(repository.clone(), 24 * 60 * 60);
+        let application = AdminApplication::new(repository.clone(), 24 * 60 * 60)
+            .await
+            .expect("initialize admin application");
         let keyring = Arc::new(AdminKeyring::ephemeral());
         let key_id = keyring.active_key_id().to_owned();
         let service = AdminIdentityService::new(application.clone(), keyring);

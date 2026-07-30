@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Workflow expressions and shell fragments are intentionally matched literally.
+# shellcheck disable=SC2016
 set -euo pipefail
 
 fail() {
@@ -17,12 +19,17 @@ node_version="$(tr -d '[:space:]' < .node-version)"
 jq -e '.engines.pnpm == null' admin-ui/package.json >/dev/null || fail 'pnpm must not be repeated in engines'
 package_manager="$(jq -r '.packageManager // empty' admin-ui/package.json)"
 [[ "$package_manager" =~ ^pnpm@[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'packageManager must pin an exact pnpm version'
+[[ "$(jq -r '.scripts["test:live"] // empty' admin-ui/package.json)" == \
+  'svelte-kit sync && playwright test --config playwright.live.config.ts' ]] ||
+  fail 'live Admin UI tests must generate the SvelteKit TypeScript configuration'
 jq -e '
   [(.dependencies // {}), (.devDependencies // {})]
   | add
   | to_entries
   | all(.value | test("^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"))
 ' admin-ui/package.json >/dev/null || fail 'direct JavaScript dependencies must use exact versions'
+grep -Fxq "  '@napi-rs/wasm-runtime': 1.1.6" admin-ui/pnpm-workspace.yaml ||
+  fail 'the Rolldown WASI fallback must use the stable emnapi-compatible runtime'
 
 rust_toolchain="$(sed -nE 's/^channel = "([^"]+)"/\1/p' rust-toolchain.toml)"
 rust_version="$(sed -nE 's/^rust-version = "([^"]+)"/\1/p' Cargo.toml | head -n 1)"
@@ -79,26 +86,51 @@ for workflow in "${cross_repo_workflows[@]}"; do
     "$workflow does not use the pinned cross-repository token action"
   require_workflow_text "$workflow" 'owner: ${{ github.repository_owner }}' \
     "$workflow hard-codes the cross-repository App owner"
-  require_workflow_text "$workflow" 'repositories: nexus' \
-    "$workflow does not scope the App token to the desktop repository"
+  require_workflow_text "$workflow" 'CURRENT_LOGICAL_ID: nexus-management' \
+    "$workflow does not bind the current repository to its stable logical identity"
+  require_workflow_text "$workflow" 'REPOSITORY_MAP: ${{ vars.NEXUS_REPOSITORY_MAP }}' \
+    "$workflow does not read the centrally audited repository map"
+  require_workflow_text "$workflow" 'SIBLING_LOGICAL_ID: nexus-client' \
+    "$workflow does not select the desktop repository by stable logical identity"
+  require_workflow_text "$workflow" 'repositories: ${{ steps.sibling-auth.outputs.repository_name }}' \
+    "$workflow does not scope the App token to the mapped desktop repository"
   require_workflow_text "$workflow" 'permission-contents: read' \
     "$workflow does not request read-only sibling contents"
   require_workflow_text "$workflow" 'permission-metadata: read' \
     "$workflow does not request read-only sibling metadata"
-  require_workflow_text "$workflow" 'repository: ${{ github.repository_owner }}/nexus' \
-    "$workflow does not resolve the fixed sibling under the runtime owner"
+  require_workflow_text "$workflow" 'repository: ${{ steps.sibling-auth.outputs.repository }}' \
+    "$workflow does not check out the validated mapped sibling"
   require_workflow_text "$workflow" 'token: ${{ steps.sibling-token.outputs.token || github.token }}' \
     "$workflow does not select App or public checkout credentials"
   if grep -qE 'permission-[^:]+:[[:space:]]+(write|admin)' "$workflow"; then
     fail "$workflow grants write or administration permission to cross-repository access"
   fi
 done
+require_workflow_text .github/workflows/ci.yml \
+  "\$expectedKeys = @('nexus-client', 'nexus-management')" \
+  'the Windows native workflow does not reject incomplete repository maps'
+require_workflow_text .github/workflows/ci.yml \
+  'Add-Content -Path $env:GITHUB_OUTPUT -Value "repository=$env:GITHUB_REPOSITORY_OWNER/$siblingName"' \
+  'the Windows native workflow does not resolve the mapped sibling under the runtime owner'
+require_workflow_text .github/workflows/ci.yml \
+  'Add-Content -Path $env:GITHUB_OUTPUT -Value "repository_name=$siblingName"' \
+  'the Windows native workflow does not expose one validated sibling name for token scoping'
+require_workflow_text .github/workflows/contract-monitor.yml \
+  'keys == ["nexus-client", "nexus-management"]' \
+  'the contract monitor does not reject incomplete repository maps'
+require_workflow_text .github/workflows/contract-monitor.yml \
+  'echo "repository=$GITHUB_REPOSITORY_OWNER/$sibling_name"' \
+  'the contract monitor does not resolve the mapped sibling under the runtime owner'
+require_workflow_text .github/workflows/contract-monitor.yml \
+  'echo "repository_name=$sibling_name"' \
+  'the contract monitor does not expose one validated sibling name for token scoping'
 require_workflow_text .github/workflows/ci.yml '$repository.private' \
   'the Windows native workflow does not reject a private repository in public mode'
 require_workflow_text .github/workflows/contract-monitor.yml '.private == false' \
   'the contract monitor does not reject a private repository in public mode'
-if grep -qE 'client-repository|camellia-computing/nexus' "${cross_repo_workflows[@]}"; then
-  fail 'server cross-repository workflows must use a fixed sibling name under the runtime owner'
+if grep -qE 'client-repository|camellia-computing/nexus|github\.repository_owner }}/nexus|repositories:[[:space:]]+nexus' \
+  "${cross_repo_workflows[@]}"; then
+  fail 'server cross-repository workflows must resolve siblings from the centrally audited map'
 fi
 require_workflow_text .github/workflows/ci.yml 'CROSS_REPO_READ_APP_PRIVATE_KEY:' \
   'server CI does not declare its optional App secret'
@@ -111,12 +143,21 @@ if grep -q 'RELEASE_APP_' .github/workflows/contract-monitor.yml ||
   grep -q 'RELEASE_APP_' <<< "$native_e2e_job"; then
   fail 'cross-repository validation must not reuse the Release App'
 fi
+require_workflow_text .github/workflows/ci.yml 'uses: astral-sh/setup-uv@' \
+  'CI does not install the pinned workflow security runtime'
+require_workflow_text .github/workflows/ci.yml 'version: 0.12.0' \
+  'CI does not select the reviewed exact uv release'
+require_workflow_text .github/workflows/ci.yml \
+  'run: uvx --from zizmor==1.28.0 zizmor --strict-collection --persona=pedantic --format=github .' \
+  'CI does not block on the reviewed pedantic workflow security scan'
 
 grep -q 'rustup toolchain install --no-self-update' "${workflow_files[@]}" || fail 'workflows must install the repository Rust toolchain'
 if grep -qE 'runs-on:[[:space:]]+(ubuntu|windows|macos)-latest' "${workflow_files[@]}"; then
   fail 'hosted runner families must be explicit'
 fi
 grep -q 'pnpm install --frozen-lockfile' "${workflow_files[@]}" || fail 'CI must install the admin UI from the frozen lockfile'
+grep -Fq 'pnpm peers check' .github/workflows/ci.yml ||
+  fail 'CI must reject unsupported Admin UI peer dependency graphs'
 grep -qE 'cargo .*(--locked.*(test|clippy)|(test|clippy).*--locked)' "${workflow_files[@]}" || fail 'CI must use locked Cargo gates'
 
 while IFS= read -r reference; do
@@ -186,6 +227,27 @@ bundle_postgres="$(sed -nE "s/^postgres_image='(postgres:[^']+)'$/\1/p" scripts/
   fail 'CI, Compose, and the Windows E2E bundle must use the same PostgreSQL digest'
 grep -Fq -- '- postgres-18-data:/var/lib/postgresql' docker-compose.yml ||
   fail 'PostgreSQL 18 Compose data must be mounted at /var/lib/postgresql'
+grep -Fq './deploy/postgres/init-runtime-roles.sh:/docker-entrypoint-initdb.d/10-runtime-roles.sh:ro' \
+  docker-compose.yml ||
+  fail 'Compose must create separate unprivileged database runtime roles on first start'
+for role in MIGRATE PUBLIC ADMIN_WEB ADMIN_WORKER; do
+  grep -Fq "CAMELLIA_NEXUS_DATABASE_${role}_PASSWORD" docker-compose.yml ||
+    fail "Compose is missing the ${role} database credential boundary"
+done
+if grep -q '^DATABASE_URL=' deploy/management-common.env.example; then
+  fail 'the common systemd environment must not share one database credential across roles'
+fi
+for role_file in migrate public-api admin-web admin-worker; do
+  grep -q '^DATABASE_URL=postgres://' "deploy/${role_file}.env.example" ||
+    fail "${role_file} must declare its own database login"
+done
+grep -Fq 'apply_runtime_database_grants' src/main.rs ||
+  fail 'the migration role must atomically apply explicit runtime database grants'
+grep -Fq 'lease_generation = lease_generation + 1' src/admin_jobs.rs ||
+  fail 'bulk-job leases must use a monotonic fencing generation'
+if grep -Fq 'worker_lease_lost' src/admin_jobs.rs; then
+  fail 'lease takeover must reconcile ambiguous items instead of reporting terminal failure'
+fi
 grep -Fq -- '- postgres-data:/var/lib/postgresql' scripts/provision-e2e-compose.sh ||
   fail 'the disposable E2E stack must use the PostgreSQL 18 data mount'
 grep -Fq '/run/desktop/mnt/host/' scripts/provision-e2e-compose.sh ||
@@ -224,7 +286,7 @@ done
 
 policy=docs/dependency-management.md
 [[ -f "$policy" ]] || fail 'dependency policy documentation is missing'
-for exception in 'pnpm 11' cookie object_store; do
+for exception in 'pnpm 11' cookie '@napi-rs/wasm-runtime' 'TypeScript 7' workflow_run; do
   grep -q "$exception" "$policy" || fail "dependency exception is undocumented: $exception"
 done
 

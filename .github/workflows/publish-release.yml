@@ -11,7 +11,6 @@ on:
         type: string
 
 permissions:
-  actions: read
   contents: read
 
 concurrency:
@@ -117,9 +116,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
-      actions: read
+      actions: read # Revalidate the exact CI evidence authorized by the release PR.
       contents: read
-      pull-requests: read
+      pull-requests: read # Bind the tag to immutable merged release PR metadata.
     steps:
       - name: Policy token
         id: policy-token
@@ -164,11 +163,11 @@ jobs:
     environment: release
     timeout-minutes: 45
     permissions:
-      actions: read
+      actions: read # Download only the candidate artifacts produced for this release.
       contents: read
-      id-token: write
-      packages: write
-      pull-requests: write
+      id-token: write # Obtain short-lived Sigstore identities for image and release evidence.
+      packages: write # Publish the authorized image to the repository package namespace.
+      pull-requests: write # Remove the release-pending label after public readback succeeds.
     env:
       RELEASE_SHA: ${{ needs.metadata.outputs.sha }}
       RELEASE_SIGNING_IDENTITY: ${{ needs.metadata.outputs.signing-identity }}
@@ -363,7 +362,7 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ needs.metadata.outputs.image }}@${{ steps.digest.outputs.digest }}
-          version: v0.70.0
+          version: v0.72.0
           scanners: vuln
           vuln-type: os,library
           severity: CRITICAL,HIGH

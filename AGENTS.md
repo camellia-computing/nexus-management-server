@@ -43,11 +43,10 @@ addresses, customer data, credentials, or machine-local procedures here.
 - Top-level and nested CLI help must remain available before environment, logging, keyring, or
   database initialization. Every runtime role and every declared Admin operation has authoritative
   bilingual usage, constraints, options, and examples derived from current handlers.
-- `migrations/`: SQLx schema history starting from the normalized `0001_prelaunch_baseline`, followed
-  by Team device-binding integrity/removal idempotency, encrypted public-Team-operation replay, and
-  indexed Admin audit-listing migrations. It covers licensing, trusted time, billing, Team,
-  administrator identity/jobs/storage, governance, cloud workspace, and Webhooks. Update this
-  summary when adding a migration.
+- `migrations/`: the normalized SQLx `0001_prelaunch_baseline` for this unreleased service. It covers
+  licensing, trusted time, billing, Team, administrator identity/jobs/storage, governance, cloud
+  workspace, and Webhooks. Once a release has deployed the baseline, every schema change must use a
+  new immutable incrementing migration.
 - `admin-ui`: SvelteKit static administration console with typed API contracts, localization,
   accessibility utilities, unit/static checks, deterministic Playwright tests, and a live final-image
   browser suite.
@@ -130,8 +129,10 @@ addresses, customer data, credentials, or machine-local procedures here.
 - List endpoints use bounded keyset pagination with canonical opaque cursors. Never load an account,
   workspace, audit history, job, or delivery inventory into an unbounded response or memory vector.
 - Production starts long-lived roles with automatic migrations disabled. The same immutable image's
-  `migrate` role applies migrations first; every service role then performs non-destructive schema
-  readiness before binding/serving.
+  `migrate` role applies migrations and explicit runtime grants first; every service role then
+  performs non-destructive schema readiness before binding/serving. Migration, public, Admin Web,
+  and Worker use distinct OS and database identities. Public code has neither DDL nor Admin
+  identity/job/storage table privileges; every new table must be classified before migration exits.
 - Readiness must prove a relation exists before referencing it. Never rewrite a migration contained
   in a published or deployed release or edit `_sqlx_migrations`; append a deterministic migration and
   test a fresh database plus the latest actually released schema when one exists. Development-only
@@ -178,6 +179,9 @@ addresses, customer data, credentials, or machine-local procedures here.
   and a ten-minute step-up window. The Admin UI may keep an active session alive only at low
   frequency while the page is visible and recent user interaction is present; background or
   unattended tabs must not be kept alive.
+- Bind every session and final login/step-up write to the current password credential epoch.
+  Password rotation advances that epoch atomically, so work that verified an older credential can
+  never create or elevate a session after the rotation commits.
 - Administrator usernames are immutable sign-in and audit identifiers. An active administrator may
   change their own display name or password with step-up, reason, idempotency, and row-version
   protection; a password change revokes every session. Offline Owner recovery requires exact
@@ -186,7 +190,9 @@ addresses, customer data, credentials, or machine-local procedures here.
   token can be replaced; replacement invalidates every earlier enrollment token.
 - Administrator roles/permissions are explicit. Mutations require the documented permission, reason,
   persisted idempotency key, and `If-Match` row version where applicable. Self-disable, self-reset, and
-  removal of the final active Platform Owner fail closed.
+  removal of the final active Platform Owner fail closed. The committing transaction locks and
+  rechecks the active identity, session, credential epoch, role, exact permission, and step-up state
+  where required; background jobs repeat the role and permission check for every item.
 - Enrollment tokens, activation-code batches, invitation tokens, and other one-display material use
   encrypted, session-bound, expiring secret deliveries and are erased after acknowledgement. Ordinary
   resource records never contain the plaintext.
@@ -227,13 +233,17 @@ addresses, customer data, credentials, or machine-local procedures here.
 ## Jobs, observability, and operations
 
 - Job preview/create, leasing, cancellation, retry, and result commit are idempotent across worker
-  crashes. A canceled job cannot be leased again; a stale worker cannot overwrite a newer lease.
+  crashes. A canceled job cannot be leased again; a stale worker cannot overwrite a newer
+  monotonically fenced lease. Lease expiry never turns an ambiguously committed item into a terminal
+  failure: the next owner replays the durable item operation and reconciles its single result.
 - Workers use bounded batches, concurrency, timeouts, retry schedules, retention, and `SKIP LOCKED`
   where appropriate. Expired leases are recoverable and never imply success.
 - Every commercial/security-sensitive success and denial writes a structured audit event with trusted
   time, canonical actor/tenant/resource/action/reason, row version, request ID, and safe metadata.
 - `/healthz` is process liveness without dependency access. `/readyz` checks repository, required
-  schema, key material as applicable, and trusted time with a bounded deadline and no-store response.
+  schema, key material as applicable, malware-scanner availability, and trusted time with a bounded
+  deadline and no-store response. The Admin Worker operations listener exposes its current
+  dependency/iteration state at `/readyz`; container health must not use its liveness-only endpoint.
 - Every production runtime role exposes low-cardinality Prometheus text metrics on its separately
   configured operations listener. Keep that listener private by default and never label metrics with
   tenant, account, device, URL, token, operation, or other user-controlled identifiers.

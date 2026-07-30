@@ -31,15 +31,39 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Resolve sibling authentication
+      - name: Resolve sibling repository and authentication
         id: sibling-auth
         shell: bash
         env:
           APP_CLIENT_ID: ${{ vars.CROSS_REPO_READ_APP_CLIENT_ID }}
           APP_PRIVATE_KEY: ${{ secrets.CROSS_REPO_READ_APP_PRIVATE_KEY }}
+          CURRENT_LOGICAL_ID: nexus-management
+          REPOSITORY_MAP: ${{ vars.NEXUS_REPOSITORY_MAP }}
+          SIBLING_LOGICAL_ID: nexus-client
           TRUSTED_CONTEXT: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.actor != 'dependabot[bot]' }}
         run: |
           set -euo pipefail
+          jq -e '
+            type == "object" and
+            keys == ["nexus-client", "nexus-management"] and
+            all(.[];
+              type == "string" and
+              length >= 1 and length <= 100 and
+              test("^[A-Za-z0-9._-]+$") and
+              . != "." and . != ".."
+            )
+          ' <<< "$REPOSITORY_MAP" >/dev/null || {
+            echo '::error title=Repository map misconfigured::NEXUS_REPOSITORY_MAP must be the reviewed, complete logical repository map.'
+            exit 1
+          }
+          current_name="$(jq -er --arg id "$CURRENT_LOGICAL_ID" '.[$id]' <<< "$REPOSITORY_MAP")"
+          sibling_name="$(jq -er --arg id "$SIBLING_LOGICAL_ID" '.[$id]' <<< "$REPOSITORY_MAP")"
+          actual_name="${GITHUB_REPOSITORY#*/}"
+          [[ "${current_name,,}" == "${actual_name,,}" &&
+            "${sibling_name,,}" != "${actual_name,,}" ]] || {
+            echo '::error title=Repository map identity mismatch::The logical repository map does not match the workflow repository.'
+            exit 1
+          }
           if [[ "$TRUSTED_CONTEXT" != true ]]; then
             mode=public
           elif [[ -n "$APP_CLIENT_ID" && -n "$APP_PRIVATE_KEY" ]]; then
@@ -50,13 +74,17 @@ jobs:
             echo '::error title=Cross-repository authentication misconfigured::CROSS_REPO_READ_APP_CLIENT_ID and CROSS_REPO_READ_APP_PRIVATE_KEY must be configured together.'
             exit 1
           fi
-          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          {
+            echo "mode=$mode"
+            echo "repository=$GITHUB_REPOSITORY_OWNER/$sibling_name"
+            echo "repository_name=$sibling_name"
+          } >> "$GITHUB_OUTPUT"
       - name: Verify public desktop repository
         if: ${{ steps.sibling-auth.outputs.mode == 'public' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          TARGET_REPOSITORY: ${{ github.repository_owner }}/nexus
+          TARGET_REPOSITORY: ${{ steps.sibling-auth.outputs.repository }}
         run: |
           set -euo pipefail
           repository_json="$(gh api "repos/$TARGET_REPOSITORY")" || {
@@ -78,13 +106,13 @@ jobs:
           client-id: ${{ vars.CROSS_REPO_READ_APP_CLIENT_ID }}
           private-key: ${{ secrets.CROSS_REPO_READ_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: nexus
+          repositories: ${{ steps.sibling-auth.outputs.repository_name }}
           permission-contents: read
           permission-metadata: read
       - name: Desktop repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: ${{ github.repository_owner }}/nexus
+          repository: ${{ steps.sibling-auth.outputs.repository }}
           ref: ${{ inputs.sibling_ref || 'main' }}
           path: _contract_sibling
           token: ${{ steps.sibling-token.outputs.token || github.token }}

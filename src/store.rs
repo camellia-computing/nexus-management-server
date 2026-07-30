@@ -12,7 +12,8 @@ use sqlx::{
 };
 
 use crate::{
-    admin_app::{AdminAppError, AdminAppResult},
+    admin_app::{AdminAppError, AdminAppResult, MutationContext},
+    admin_auth::{AdminPermission, authorize_admin_mutation},
     admin_operation::{self, AdminOperationClaim},
     contracts::{DeviceState, Plan},
     domain::{
@@ -1494,11 +1495,14 @@ impl PostgresRepository {
         account: Account,
         audit: AuditEventRecord,
         operation: Option<&AdminOperationClaim>,
+        context: &MutationContext,
+        permission: AdminPermission,
     ) -> AdminAppResult<Account> {
         if audit.account_id.as_deref() != Some(account.id.as_str()) {
             return Err(ApiError::InvalidRequest.into());
         }
         let mut tx = self.pool.begin().await.map_err(|_| ApiError::Database)?;
+        authorize_admin_mutation(&mut tx, context, permission, false, audit.occurred_at).await?;
         if let Some(operation) = operation
             && let Some(response) =
                 admin_operation::claim_prepared::<Account>(&mut tx, operation).await?
@@ -1524,6 +1528,7 @@ impl PostgresRepository {
         Ok(account)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_account_with_audit(
         &self,
         account: Account,
@@ -1531,11 +1536,14 @@ impl PostgresRepository {
         revoke_sessions: bool,
         audit: AuditEventRecord,
         operation: Option<&AdminOperationClaim>,
+        context: &MutationContext,
+        permission: AdminPermission,
     ) -> AdminAppResult<Account> {
         if audit.account_id.as_deref() != Some(account.id.as_str()) {
             return Err(ApiError::InvalidRequest.into());
         }
         let mut tx = self.pool.begin().await.map_err(|_| ApiError::Database)?;
+        authorize_admin_mutation(&mut tx, context, permission, false, audit.occurred_at).await?;
         if let Some(operation) = operation
             && let Some(response) =
                 admin_operation::claim_prepared::<Account>(&mut tx, operation).await?
@@ -1622,6 +1630,7 @@ impl PostgresRepository {
         expected_document: Option<serde_json::Value>,
         audit: AuditEventRecord,
         operation: Option<&AdminOperationClaim>,
+        context: &MutationContext,
     ) -> AdminAppResult<License> {
         if audit.account_id.as_deref() != Some(license.account_id.as_str())
             || audit.license_id.as_deref() != Some(license.id.as_str())
@@ -1635,6 +1644,14 @@ impl PostgresRepository {
             previous.status != LicenseStatus::Canceled && license.status == LicenseStatus::Canceled
         });
         let mut tx = self.pool.begin().await.map_err(|_| ApiError::Database)?;
+        authorize_admin_mutation(
+            &mut tx,
+            context,
+            AdminPermission::LicenseWrite,
+            false,
+            audit.occurred_at,
+        )
+        .await?;
         if let Some(operation) = operation
             && let Some(response) =
                 admin_operation::claim_prepared::<License>(&mut tx, operation).await?
@@ -1780,6 +1797,7 @@ impl PostgresRepository {
         expected_version: Option<i64>,
         audit: AuditEventRecord,
         operation: Option<&AdminOperationClaim>,
+        context: &MutationContext,
     ) -> AdminAppResult<Option<ActivationCodeRecord>> {
         if audit.account_id.as_deref() != Some(code.account_id.as_str())
             || audit.license_id.as_deref() != code.license_id.as_deref()
@@ -1787,6 +1805,14 @@ impl PostgresRepository {
             return Err(ApiError::InvalidRequest.into());
         }
         let mut tx = self.pool.begin().await.map_err(|_| ApiError::Database)?;
+        authorize_admin_mutation(
+            &mut tx,
+            context,
+            AdminPermission::CodeWrite,
+            false,
+            audit.occurred_at,
+        )
+        .await?;
         if let Some(operation) = operation
             && let Some(response) =
                 admin_operation::claim_prepared::<ActivationCodeRecord>(&mut tx, operation).await?
@@ -1835,16 +1861,14 @@ impl PostgresRepository {
         &self,
         operation_id: &str,
         request_hash: &str,
-        actor: &str,
-        reason: &str,
+        context: &MutationContext,
         records: &[ActivationCodeRecord],
         audits: &[AuditEventRecord],
     ) -> AdminAppResult<ActivationCodeBatchCommit> {
         self.issue_activation_code_batch_with_delivery(
             operation_id,
             request_hash,
-            actor,
-            reason,
+            context,
             records,
             audits,
             None,
@@ -1857,12 +1881,13 @@ impl PostgresRepository {
         &self,
         operation_id: &str,
         request_hash: &str,
-        actor: &str,
-        reason: &str,
+        context: &MutationContext,
         records: &[ActivationCodeRecord],
         audits: &[AuditEventRecord],
         delivery: Option<&AdminSecretDeliveryInsert>,
     ) -> AdminAppResult<ActivationCodeBatchCommit> {
+        let actor = context.principal.id.as_str();
+        let reason = context.reason.as_str();
         if operation_id.trim().is_empty()
             || request_hash.len() != 64
             || actor.trim().is_empty()
@@ -1886,6 +1911,14 @@ impl PostgresRepository {
             reason,
         )?;
         let mut tx = self.pool.begin().await.map_err(|_| ApiError::Database)?;
+        authorize_admin_mutation(
+            &mut tx,
+            context,
+            AdminPermission::CodeIssue,
+            false,
+            audits[0].occurred_at,
+        )
+        .await?;
         if let Some(mut response) =
             admin_operation::claim_prepared::<ActivationCodeBatchCommit>(&mut tx, &operation)
                 .await?
@@ -1974,6 +2007,7 @@ impl PostgresRepository {
         rows.into_iter().map(row_document).collect()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn set_device_state_with_audit(
         &self,
         device_id: &str,
@@ -1982,8 +2016,11 @@ impl PostgresRepository {
         now: i64,
         audit: AuditEventRecord,
         operation: Option<&AdminOperationClaim>,
+        context: &MutationContext,
+        permission: AdminPermission,
     ) -> AdminAppResult<Option<Device>> {
         let mut tx = self.pool.begin().await.map_err(|_| ApiError::Database)?;
+        authorize_admin_mutation(&mut tx, context, permission, false, now).await?;
         if let Some(operation) = operation
             && let Some(response) =
                 admin_operation::claim_prepared::<Device>(&mut tx, operation).await?
@@ -2096,6 +2133,9 @@ impl PostgresRepository {
 #[async_trait]
 impl LicenseRepository for PostgresRepository {
     async fn readiness_check(&self) -> Result<()> {
+        // `information_schema` hides columns the current role cannot read. Use
+        // PostgreSQL's metadata catalog so schema readiness remains independent
+        // from each runtime role's intentionally narrower data privileges.
         let row = sqlx::query(
             "SELECT
                 to_regclass('public.accounts') IS NOT NULL
@@ -2134,11 +2174,12 @@ impl LicenseRepository for PostgresRepository {
                       AND pg_get_triggerdef(oid) LIKE '%INSERT OR UPDATE OF state%'
                 )
                 AND EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_schema = 'public'
-                      AND table_name = 'device_member_bindings'
-                      AND column_name = 'account_id'
-                      AND is_nullable = 'NO'
+                    SELECT 1 FROM pg_attribute
+                    WHERE attrelid = to_regclass('public.device_member_bindings')
+                      AND attname = 'account_id'
+                      AND attnum > 0
+                      AND NOT attisdropped
+                      AND attnotnull
                 )
                 AND EXISTS (
                     SELECT 1 FROM pg_trigger
@@ -2155,38 +2196,43 @@ impl LicenseRepository for PostgresRepository {
                     'public.observe_service_time_authority(bigint,bigint)'
                 ) IS NOT NULL
                 AND EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_schema = 'public'
-                      AND table_name = 'licenses'
-                      AND column_name = 'plan_revision'
-                      AND is_nullable = 'NO'
+                    SELECT 1 FROM pg_attribute
+                    WHERE attrelid = to_regclass('public.licenses')
+                      AND attname = 'plan_revision'
+                      AND attnum > 0
+                      AND NOT attisdropped
+                      AND attnotnull
                 )
                 AND EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_schema = 'public'
-                      AND table_name = 'licenses'
-                      AND column_name = 'purchased_seats'
-                      AND is_nullable = 'NO'
+                    SELECT 1 FROM pg_attribute
+                    WHERE attrelid = to_regclass('public.licenses')
+                      AND attname = 'purchased_seats'
+                      AND attnum > 0
+                      AND NOT attisdropped
+                      AND attnotnull
                 )
                 AND NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_schema = 'public'
-                      AND table_name = 'licenses'
-                      AND column_name = 'document'
+                    SELECT 1 FROM pg_attribute
+                    WHERE attrelid = to_regclass('public.licenses')
+                      AND attname = 'document'
+                      AND attnum > 0
+                      AND NOT attisdropped
                 )
                 AND EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_schema = 'public'
-                      AND table_name = 'refresh_sessions'
-                      AND column_name = 'device_id'
-                      AND is_nullable = 'NO'
+                    SELECT 1 FROM pg_attribute
+                    WHERE attrelid = to_regclass('public.refresh_sessions')
+                      AND attname = 'device_id'
+                      AND attnum > 0
+                      AND NOT attisdropped
+                      AND attnotnull
                 )
                 AND EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_schema = 'public'
-                      AND table_name = 'refresh_sessions'
-                      AND column_name = 'proof_state'
-                      AND is_nullable = 'NO'
+                    SELECT 1 FROM pg_attribute
+                    WHERE attrelid = to_regclass('public.refresh_sessions')
+                      AND attname = 'proof_state'
+                      AND attnum > 0
+                      AND NOT attisdropped
+                      AND attnotnull
                 )
                 AND to_regclass(
                     'public.refresh_sessions_one_active_proven_per_device_idx'

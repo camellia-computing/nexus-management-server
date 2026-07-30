@@ -1,16 +1,17 @@
 [Unit]
 Description=Camellia Nexus License Database Migration
-Documentation=https://github.com/camellia-computing/nexus-management-server
+Documentation=file:/usr/share/doc/camellia-nexus/systemd-deployment.md
 After=network-online.target
 Wants=network-online.target
 Before=camellia-nexus-management-server.service camellia-nexus-management-admin-web.service camellia-nexus-management-admin-worker.service
 
 [Service]
 Type=oneshot
-User=camellia-license
-Group=camellia-license
+User=camellia-nexus-migrate
+Group=camellia-nexus-migrate
 UMask=0077
 EnvironmentFile=/etc/camellia-nexus/management-common.env
+EnvironmentFile=/etc/camellia-nexus/migrate.env
 ExecStart=/usr/local/bin/camellia-nexus-management-server migrate
 RemainAfterExit=yes
 NoNewPrivileges=true
@@ -22,6 +23,9 @@ ProtectKernelLogs=true
 ProtectKernelModules=true
 ProtectKernelTunables=true
 ProtectSystem=strict
+ProtectProc=invisible
+ProcSubset=pid
+InaccessiblePaths=-/etc/camellia-nexus/secrets -/var/lib/camellia-nexus
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictRealtime=true
 RestrictSUIDSGID=true

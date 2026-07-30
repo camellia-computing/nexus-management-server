@@ -271,10 +271,12 @@ CREATE TABLE public.admin_bulk_job_items (
     expected_version bigint NOT NULL,
     status text NOT NULL,
     attempts integer DEFAULT 0 NOT NULL,
+    lease_generation bigint DEFAULT 0 NOT NULL,
     error_code text,
     started_at bigint,
     finished_at bigint,
     CONSTRAINT admin_bulk_job_items_attempts_check CHECK ((attempts >= 0)),
+    CONSTRAINT admin_bulk_job_items_lease_generation_check CHECK ((lease_generation >= 0)),
     CONSTRAINT admin_bulk_job_items_expected_version_check CHECK ((expected_version > 0)),
     CONSTRAINT admin_bulk_job_items_ordinal_check CHECK ((ordinal >= 0)),
     CONSTRAINT admin_bulk_job_items_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'running'::text, 'succeeded'::text, 'failed'::text, 'canceled'::text])))
@@ -295,12 +297,14 @@ CREATE TABLE public.admin_bulk_jobs (
     failed_items integer DEFAULT 0 NOT NULL,
     lease_owner text,
     lease_expires_at bigint,
+    lease_generation bigint DEFAULT 0 NOT NULL,
     parent_job_id text,
     created_at bigint NOT NULL,
     started_at bigint,
     finished_at bigint,
     CONSTRAINT admin_bulk_jobs_completed_items_check CHECK ((completed_items >= 0)),
     CONSTRAINT admin_bulk_jobs_failed_items_check CHECK ((failed_items >= 0)),
+    CONSTRAINT admin_bulk_jobs_lease_generation_check CHECK ((lease_generation >= 0)),
     CONSTRAINT admin_bulk_jobs_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT admin_bulk_jobs_status_check CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'cancel_requested'::text, 'succeeded'::text, 'partial_failed'::text, 'failed'::text, 'canceled'::text]))),
     CONSTRAINT admin_bulk_jobs_total_items_check CHECK (((total_items >= 1) AND (total_items <= 10000)))
@@ -367,7 +371,9 @@ CREATE TABLE public.admin_password_credentials (
     user_id text NOT NULL,
     password_hash text NOT NULL,
     key_id text NOT NULL,
-    changed_at bigint NOT NULL
+    changed_at bigint NOT NULL,
+    credential_epoch bigint DEFAULT 1 NOT NULL,
+    CONSTRAINT admin_password_credentials_epoch_check CHECK ((credential_epoch > 0))
 );
 
 CREATE TABLE public.admin_recovery_codes (
@@ -418,7 +424,9 @@ CREATE TABLE public.admin_sessions (
     expires_at bigint NOT NULL,
     revoked_at bigint,
     created_at bigint NOT NULL,
+    credential_epoch bigint DEFAULT 1 NOT NULL,
     CONSTRAINT admin_sessions_check CHECK ((expires_at > created_at)),
+    CONSTRAINT admin_sessions_epoch_check CHECK ((credential_epoch > 0)),
     CONSTRAINT admin_sessions_csrf_hash_check CHECK ((csrf_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT admin_sessions_token_hash_check CHECK ((token_hash ~ '^[0-9a-f]{64}$'::text))
 );
@@ -737,13 +745,15 @@ CREATE TABLE public.stored_objects (
     wrapped_key bytea NOT NULL,
     content_nonce bytea NOT NULL,
     status text NOT NULL,
+    staging_target_status text,
     created_by text NOT NULL,
     created_at bigint NOT NULL,
     updated_at bigint NOT NULL,
     CONSTRAINT stored_objects_backend_check CHECK ((backend = ANY (ARRAY['filesystem'::text, 'database'::text, 's3'::text]))),
     CONSTRAINT stored_objects_byte_length_check CHECK ((byte_length >= 0)),
     CONSTRAINT stored_objects_sha256_check CHECK ((sha256 ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT stored_objects_status_check CHECK ((status = ANY (ARRAY['staging'::text, 'quarantined'::text, 'ready'::text, 'rejected'::text, 'deleting'::text])))
+    CONSTRAINT stored_objects_status_check CHECK ((status = ANY (ARRAY['staging'::text, 'quarantined'::text, 'ready'::text, 'rejected'::text, 'deleting'::text]))),
+    CONSTRAINT stored_objects_staging_target_check CHECK (((status = 'staging'::text AND backend <> 'database'::text AND staging_target_status = ANY (ARRAY['quarantined'::text, 'ready'::text, 'rejected'::text])) OR (status <> 'staging'::text AND staging_target_status IS NULL)))
 );
 
 CREATE TABLE public.team_invitations (
@@ -1281,6 +1291,10 @@ CREATE INDEX authorization_codes_expiry_idx ON public.authorization_codes USING 
 
 CREATE INDEX billing_invoices_account_status_idx ON public.billing_invoices USING btree (account_id, status, created_at DESC);
 
+CREATE INDEX billing_invoices_account_keyset_idx ON public.billing_invoices USING btree (account_id, created_at DESC, id DESC);
+
+CREATE INDEX billing_invoices_keyset_idx ON public.billing_invoices USING btree (created_at DESC, id DESC);
+
 CREATE INDEX customer_payment_operations_claim_idx ON public.customer_payment_operations USING btree (claim_id) WHERE (claim_id IS NOT NULL);
 
 CREATE INDEX device_challenges_expiry_idx ON public.device_challenges USING btree (expires_at, consumed);
@@ -1307,7 +1321,9 @@ CREATE INDEX licenses_plan_revision_idx ON public.licenses USING btree (plan, pl
 
 CREATE UNIQUE INDEX manual_payment_claims_one_open_per_invoice_idx ON public.manual_payment_claims USING btree (invoice_id) WHERE (status = ANY (ARRAY['submitted'::text, 'under_review'::text, 'needs_information'::text]));
 
-CREATE INDEX manual_payment_claims_review_queue_idx ON public.manual_payment_claims USING btree (status, created_at);
+CREATE INDEX manual_payment_claims_keyset_idx ON public.manual_payment_claims USING btree (created_at DESC, id DESC);
+
+CREATE INDEX manual_payment_claims_review_queue_idx ON public.manual_payment_claims USING btree (status, created_at DESC, id DESC);
 
 CREATE INDEX member_device_enrollments_member_idx ON public.member_device_enrollments USING btree (member_id, created_at DESC, id);
 

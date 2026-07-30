@@ -18,11 +18,11 @@ use crate::{
     admin_app::{
         AdminAppError, AdminApplication, AdminPrincipal, MutationContext, Page, PageRequest,
     },
-    admin_auth::AdminKeyring,
+    admin_auth::{AdminKeyring, AdminPermission, authorize_admin_mutation},
     admin_operation,
     admin_storage::{
         EvidenceScanner, ObjectStorageConfig, ObjectStorageError, ObjectStorageService,
-        StoredObjectStatus,
+        StagingReconciliation, StoredObjectStatus,
     },
     config::{Environment, database_pool_config_from_env, time_max_forward_jump_seconds_from_env},
     contracts::DeviceState,
@@ -36,6 +36,7 @@ use crate::{
 const PREVIEW_TTL_SECONDS: i64 = 10 * 60;
 const JOB_LEASE_SECONDS: i64 = 60;
 const JOB_HEARTBEAT_SECONDS: u64 = 20;
+const WORKER_DEPENDENCY_CHECK_SECONDS: i64 = 10;
 const MAX_TARGETS: usize = 10_000;
 const MAX_ATTEMPTS: i32 = 3;
 
@@ -189,6 +190,7 @@ impl AdminJobService {
     pub async fn create_preview(
         &self,
         actor_id: &str,
+        session_id: &str,
         request: CreatePreview,
     ) -> AdminJobResult<BulkPreview> {
         validate_parameters(request.kind, &request.parameters)?;
@@ -224,6 +226,34 @@ impl AdminJobService {
             "targets": preview.targets,
         }))
         .map_err(|_| ApiError::Internal)?;
+        let context = MutationContext::new(
+            AdminPrincipal {
+                id: actor_id.to_owned(),
+                session_id: Some(session_id.to_owned()),
+                source_ip: None,
+                user_agent_hash: None,
+                request_id: None,
+            },
+            "create bulk-operation preview",
+        )?;
+        let mut tx = self
+            .repository
+            .pool
+            .begin()
+            .await
+            .map_err(|_| ApiError::Database)?;
+        authorize_admin_mutation(&mut tx, &context, AdminPermission::JobManage, false, now)
+            .await
+            .map_err(AdminAppError::from)?;
+        authorize_admin_mutation(
+            &mut tx,
+            &context,
+            required_admin_permission(preview.kind, &preview.parameters)?,
+            false,
+            now,
+        )
+        .await
+        .map_err(AdminAppError::from)?;
         sqlx::query(
             "INSERT INTO admin_bulk_previews
              (id, actor_id, kind, parameters, targets, target_count,
@@ -239,9 +269,10 @@ impl AdminJobService {
         .bind(sha256_hex(&canonical))
         .bind(preview.expires_at)
         .bind(now)
-        .execute(&self.repository.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|_| ApiError::Database)?;
+        tx.commit().await.map_err(|_| ApiError::Database)?;
         Ok(preview)
     }
 
@@ -264,6 +295,17 @@ impl AdminJobService {
                 "idempotency key must contain 1 to 128 characters".to_owned(),
             ));
         }
+        let mut context = MutationContext::new(
+            AdminPrincipal {
+                id: actor_id.to_owned(),
+                session_id: Some(session_id.to_owned()),
+                source_ip: None,
+                user_agent_hash: None,
+                request_id: None,
+            },
+            reason,
+        )?;
+        context.operation_id = Some(idempotency_key.to_owned());
         let now = self.application.trusted_now().await?;
         let mut tx = self
             .repository
@@ -271,6 +313,9 @@ impl AdminJobService {
             .begin()
             .await
             .map_err(|_| ApiError::Database)?;
+        authorize_admin_mutation(&mut tx, &context, AdminPermission::JobManage, true, now)
+            .await
+            .map_err(AdminAppError::from)?;
         let preview = sqlx::query(
             "SELECT kind, parameters, targets, target_count, request_hash, consumed_at, expires_at
              FROM admin_bulk_previews
@@ -291,6 +336,15 @@ impl AdminJobService {
         let parameters: Value = preview
             .try_get("parameters")
             .map_err(|_| ApiError::Database)?;
+        authorize_admin_mutation(
+            &mut tx,
+            &context,
+            required_admin_permission(kind, &parameters)?,
+            true,
+            now,
+        )
+        .await
+        .map_err(AdminAppError::from)?;
         let targets: Vec<BulkTarget> =
             serde_json::from_value(preview.try_get("targets").map_err(|_| ApiError::Database)?)
                 .map_err(|_| ApiError::Database)?;
@@ -436,6 +490,9 @@ impl AdminJobService {
             .begin()
             .await
             .map_err(|_| ApiError::Database)?;
+        authorize_admin_mutation(&mut tx, context, AdminPermission::JobManage, false, now)
+            .await
+            .map_err(AdminAppError::from)?;
         if let Some(response) =
             admin_operation::claim_prepared::<BulkJob>(&mut tx, &operation).await?
         {
@@ -551,6 +608,7 @@ impl AdminJobService {
             "UPDATE admin_bulk_jobs SET
                  status = CASE WHEN status = 'cancel_requested' THEN status ELSE 'running' END,
                  lease_owner = $1, lease_expires_at = $2,
+                 lease_generation = lease_generation + 1,
                  started_at = coalesce(started_at, $3)
              WHERE id = (
                  SELECT id FROM admin_bulk_jobs
@@ -566,7 +624,7 @@ impl AdminJobService {
                  ORDER BY created_at ASC
                  FOR UPDATE SKIP LOCKED LIMIT 1
              )
-             RETURNING id, kind, status, actor_id, reason, parameters",
+             RETURNING id, kind, status, actor_id, reason, parameters, lease_generation",
         )
         .bind(worker_id)
         .bind(now.saturating_add(JOB_LEASE_SECONDS))
@@ -585,20 +643,36 @@ impl AdminJobService {
         let actor_id: String = job.try_get("actor_id").map_err(|_| ApiError::Database)?;
         let reason: String = job.try_get("reason").map_err(|_| ApiError::Database)?;
         let parameters: Value = job.try_get("parameters").map_err(|_| ApiError::Database)?;
-        self.fail_stale_running_items(&job_id, worker_id).await?;
-        let heartbeat = self.start_lease_heartbeat(job_id.clone(), worker_id.to_owned());
-        if self.cancel_requested(&job_id, worker_id).await? {
-            self.cancel_pending_items(&job_id, worker_id).await?;
-            self.finish_job(&job_id, worker_id).await?;
+        let lease_generation: i64 = job
+            .try_get("lease_generation")
+            .map_err(|_| ApiError::Database)?;
+        self.requeue_stale_running_items(&job_id, worker_id, lease_generation)
+            .await?;
+        let heartbeat =
+            self.start_lease_heartbeat(job_id.clone(), worker_id.to_owned(), lease_generation);
+        if self
+            .cancel_requested(&job_id, worker_id, lease_generation)
+            .await?
+        {
+            self.cancel_pending_items(&job_id, worker_id, lease_generation)
+                .await?;
+            self.finish_job(&job_id, worker_id, lease_generation)
+                .await?;
             return Ok(true);
         }
         if !self
             .actor_still_authorized(&actor_id, kind, &parameters)
             .await?
         {
-            self.fail_remaining(&job_id, worker_id, "actor_permission_revoked")
+            self.fail_remaining(
+                &job_id,
+                worker_id,
+                lease_generation,
+                "actor_permission_revoked",
+            )
+            .await?;
+            self.finish_job(&job_id, worker_id, lease_generation)
                 .await?;
-            self.finish_job(&job_id, worker_id).await?;
             return Ok(true);
         }
         let items = sqlx::query(
@@ -612,12 +686,21 @@ impl AdminJobService {
         .await
         .map_err(|_| ApiError::Database)?;
         for item in items {
-            if heartbeat.lost() || !self.owns_lease(&job_id, worker_id).await? {
+            if heartbeat.lost()
+                || !self
+                    .owns_lease(&job_id, worker_id, lease_generation)
+                    .await?
+            {
                 return Err(AdminJobError::Conflict);
             }
-            if self.cancel_requested(&job_id, worker_id).await? {
-                self.cancel_pending_items(&job_id, worker_id).await?;
-                self.finish_job(&job_id, worker_id).await?;
+            if self
+                .cancel_requested(&job_id, worker_id, lease_generation)
+                .await?
+            {
+                self.cancel_pending_items(&job_id, worker_id, lease_generation)
+                    .await?;
+                self.finish_job(&job_id, worker_id, lease_generation)
+                    .await?;
                 return Ok(true);
             }
             let ordinal: i32 = item.try_get("ordinal").map_err(|_| ApiError::Database)?;
@@ -628,11 +711,13 @@ impl AdminJobService {
             let attempts: i32 = item.try_get("attempts").map_err(|_| ApiError::Database)?;
             let claimed = sqlx::query(
                 "UPDATE admin_bulk_job_items
-                 SET status = 'running', attempts = attempts + 1, started_at = $3
+                 SET status = 'running', attempts = attempts + 1, started_at = $3,
+                     lease_generation = $5, error_code = NULL, finished_at = NULL
                  WHERE job_id = $1 AND ordinal = $2 AND status = 'pending'
                    AND EXISTS (
                      SELECT 1 FROM admin_bulk_jobs
                      WHERE id = $1 AND lease_owner = $4
+                       AND lease_generation = $5
                        AND status IN ('running', 'cancel_requested')
                        AND lease_expires_at > $3
                    )",
@@ -641,6 +726,7 @@ impl AdminJobService {
             .bind(ordinal)
             .bind(self.application.trusted_now().await?)
             .bind(worker_id)
+            .bind(lease_generation)
             .execute(&self.repository.pool)
             .await
             .map_err(|_| ApiError::Database)?
@@ -673,9 +759,11 @@ impl AdminJobService {
                  SET status = $3, error_code = $4,
                      finished_at = CASE WHEN $3 = 'pending' THEN NULL ELSE $5 END
                  WHERE job_id = $1 AND ordinal = $2 AND status = 'running'
+                   AND lease_generation = $7
                    AND EXISTS (
                      SELECT 1 FROM admin_bulk_jobs
                      WHERE id = $1 AND lease_owner = $6
+                       AND lease_generation = $7
                        AND status IN ('running', 'cancel_requested')
                    )",
             )
@@ -685,6 +773,7 @@ impl AdminJobService {
             .bind(error_code)
             .bind(self.application.trusted_now().await?)
             .bind(worker_id)
+            .bind(lease_generation)
             .execute(&self.repository.pool)
             .await
             .map_err(|_| ApiError::Database)?
@@ -693,16 +782,27 @@ impl AdminJobService {
                 return Err(AdminJobError::Conflict);
             }
         }
-        if self.cancel_requested(&job_id, worker_id).await? {
-            self.cancel_pending_items(&job_id, worker_id).await?;
-            self.finish_job(&job_id, worker_id).await?;
+        if self
+            .cancel_requested(&job_id, worker_id, lease_generation)
+            .await?
+        {
+            self.cancel_pending_items(&job_id, worker_id, lease_generation)
+                .await?;
+            self.finish_job(&job_id, worker_id, lease_generation)
+                .await?;
             return Ok(true);
         }
-        self.refresh_job_counts(&job_id, worker_id).await?;
+        self.refresh_job_counts(&job_id, worker_id, lease_generation)
+            .await?;
         Ok(true)
     }
 
-    fn start_lease_heartbeat(&self, job_id: String, worker_id: String) -> JobLeaseHeartbeat {
+    fn start_lease_heartbeat(
+        &self,
+        job_id: String,
+        worker_id: String,
+        lease_generation: i64,
+    ) -> JobLeaseHeartbeat {
         let pool = self.repository.pool.clone();
         let application = self.application.clone();
         let lost = Arc::new(AtomicBool::new(false));
@@ -722,11 +822,13 @@ impl AdminJobService {
                 let renewed = sqlx::query(
                     "UPDATE admin_bulk_jobs SET lease_expires_at = $3
                      WHERE id = $1 AND lease_owner = $2
+                       AND lease_generation = $4
                        AND status IN ('running', 'cancel_requested')",
                 )
                 .bind(&job_id)
                 .bind(&worker_id)
                 .bind(now.saturating_add(JOB_LEASE_SECONDS))
+                .bind(lease_generation)
                 .execute(&pool)
                 .await;
                 if !matches!(renewed, Ok(result) if result.rows_affected() == 1) {
@@ -738,29 +840,42 @@ impl AdminJobService {
         JobLeaseHeartbeat { lost, task }
     }
 
-    async fn fail_stale_running_items(&self, job_id: &str, worker_id: &str) -> AdminJobResult<()> {
+    async fn requeue_stale_running_items(
+        &self,
+        job_id: &str,
+        worker_id: &str,
+        lease_generation: i64,
+    ) -> AdminJobResult<()> {
         sqlx::query(
             "UPDATE admin_bulk_job_items
-             SET status = 'failed', error_code = 'worker_lease_lost', finished_at = $3
+             SET status = 'pending', error_code = NULL, started_at = NULL, finished_at = NULL
              WHERE job_id = $1 AND status = 'running'
+               AND lease_generation < $3
                AND EXISTS (
-                 SELECT 1 FROM admin_bulk_jobs WHERE id = $1 AND lease_owner = $2
+                 SELECT 1 FROM admin_bulk_jobs
+                 WHERE id = $1 AND lease_owner = $2 AND lease_generation = $3
                )",
         )
         .bind(job_id)
         .bind(worker_id)
-        .bind(self.application.trusted_now().await?)
+        .bind(lease_generation)
         .execute(&self.repository.pool)
         .await
         .map_err(|_| ApiError::Database)?;
         Ok(())
     }
 
-    async fn owns_lease(&self, job_id: &str, worker_id: &str) -> AdminJobResult<bool> {
+    async fn owns_lease(
+        &self,
+        job_id: &str,
+        worker_id: &str,
+        lease_generation: i64,
+    ) -> AdminJobResult<bool> {
         sqlx::query_scalar(
             "SELECT EXISTS (
                SELECT 1 FROM admin_bulk_jobs
                WHERE id = $1 AND lease_owner = $2
+                 AND lease_generation = $4
                  AND status IN ('running', 'cancel_requested')
                  AND lease_expires_at > $3
              )",
@@ -768,20 +883,28 @@ impl AdminJobService {
         .bind(job_id)
         .bind(worker_id)
         .bind(self.application.trusted_now().await?)
+        .bind(lease_generation)
         .fetch_one(&self.repository.pool)
         .await
         .map_err(|_| ApiError::Database.into())
     }
 
-    async fn cancel_requested(&self, job_id: &str, worker_id: &str) -> AdminJobResult<bool> {
+    async fn cancel_requested(
+        &self,
+        job_id: &str,
+        worker_id: &str,
+        lease_generation: i64,
+    ) -> AdminJobResult<bool> {
         sqlx::query_scalar(
             "SELECT EXISTS (
                SELECT 1 FROM admin_bulk_jobs
-               WHERE id = $1 AND lease_owner = $2 AND status = 'cancel_requested'
+               WHERE id = $1 AND lease_owner = $2 AND lease_generation = $3
+                 AND status = 'cancel_requested'
              )",
         )
         .bind(job_id)
         .bind(worker_id)
+        .bind(lease_generation)
         .fetch_one(&self.repository.pool)
         .await
         .map_err(|_| ApiError::Database.into())
@@ -892,17 +1015,24 @@ impl AdminJobService {
         Ok(active)
     }
 
-    async fn cancel_pending_items(&self, job_id: &str, worker_id: &str) -> AdminJobResult<()> {
+    async fn cancel_pending_items(
+        &self,
+        job_id: &str,
+        worker_id: &str,
+        lease_generation: i64,
+    ) -> AdminJobResult<()> {
         sqlx::query(
             "UPDATE admin_bulk_job_items SET status = 'canceled', finished_at = $2
              WHERE job_id = $1 AND status = 'pending'
                AND EXISTS (
-                 SELECT 1 FROM admin_bulk_jobs WHERE id = $1 AND lease_owner = $3
+                 SELECT 1 FROM admin_bulk_jobs
+                 WHERE id = $1 AND lease_owner = $3 AND lease_generation = $4
                )",
         )
         .bind(job_id)
         .bind(self.application.trusted_now().await?)
         .bind(worker_id)
+        .bind(lease_generation)
         .execute(&self.repository.pool)
         .await
         .map_err(|_| ApiError::Database)?;
@@ -913,6 +1043,7 @@ impl AdminJobService {
         &self,
         job_id: &str,
         worker_id: &str,
+        lease_generation: i64,
         code: &str,
     ) -> AdminJobResult<()> {
         sqlx::query(
@@ -920,20 +1051,27 @@ impl AdminJobService {
              SET status = 'failed', error_code = $2, finished_at = $3
              WHERE job_id = $1 AND status IN ('pending', 'running')
                AND EXISTS (
-                 SELECT 1 FROM admin_bulk_jobs WHERE id = $1 AND lease_owner = $4
+                 SELECT 1 FROM admin_bulk_jobs
+                 WHERE id = $1 AND lease_owner = $4 AND lease_generation = $5
                )",
         )
         .bind(job_id)
         .bind(code)
         .bind(self.application.trusted_now().await?)
         .bind(worker_id)
+        .bind(lease_generation)
         .execute(&self.repository.pool)
         .await
         .map_err(|_| ApiError::Database)?;
         Ok(())
     }
 
-    async fn refresh_job_counts(&self, job_id: &str, worker_id: &str) -> AdminJobResult<()> {
+    async fn refresh_job_counts(
+        &self,
+        job_id: &str,
+        worker_id: &str,
+        lease_generation: i64,
+    ) -> AdminJobResult<()> {
         let row = sqlx::query(
             "SELECT
                 count(*) FILTER (WHERE status = 'succeeded')::int AS completed,
@@ -973,7 +1111,7 @@ impl AdminJobService {
                  lease_expires_at = NULL,
                  lease_owner = NULL,
                  finished_at = CASE WHEN $6 = 0 THEN $2 ELSE NULL END
-             WHERE id = $1 AND lease_owner = $7",
+             WHERE id = $1 AND lease_owner = $7 AND lease_generation = $8",
         )
         .bind(job_id)
         .bind(now)
@@ -982,6 +1120,7 @@ impl AdminJobService {
         .bind(status)
         .bind(remaining)
         .bind(worker_id)
+        .bind(lease_generation)
         .execute(&self.repository.pool)
         .await
         .map_err(|_| ApiError::Database)?
@@ -992,8 +1131,14 @@ impl AdminJobService {
         Ok(())
     }
 
-    async fn finish_job(&self, job_id: &str, worker_id: &str) -> AdminJobResult<()> {
-        self.refresh_job_counts(job_id, worker_id).await
+    async fn finish_job(
+        &self,
+        job_id: &str,
+        worker_id: &str,
+        lease_generation: i64,
+    ) -> AdminJobResult<()> {
+        self.refresh_job_counts(job_id, worker_id, lease_generation)
+            .await
     }
 }
 
@@ -1059,7 +1204,8 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
     let application = AdminApplication::new(
         repository.clone(),
         time_max_forward_jump_seconds_from_env()?,
-    );
+    )
+    .await?;
     let keyring = match env::var("CAMELLIA_NEXUS_ADMIN_KEYRING_PATH") {
         Ok(path) if !path.trim().is_empty() => Arc::new(AdminKeyring::load(PathBuf::from(path))?),
         _ if environment == Environment::Production => {
@@ -1070,17 +1216,23 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => Arc::new(AdminKeyring::ephemeral()),
     };
-    keyring.readiness_check(&repository).await?;
-    runtime_metrics.record_readiness(true);
+    keyring.worker_readiness_check(&repository).await?;
     let storage = ObjectStorageService::new(
         application.clone(),
-        keyring,
+        keyring.clone(),
         ObjectStorageConfig::from_env()?,
     )?;
     let scanner = EvidenceScanner::from_env(environment == Environment::Production)?;
+    scanner.readiness_check().await?;
+    runtime_metrics.record_readiness(true);
     let jobs = AdminJobService::new(application.clone());
     let worker_id = random_id("admin_worker");
     let mut next_secret_purge = 0_i64;
+    let mut next_dependency_check = application
+        .trusted_now()
+        .await?
+        .saturating_add(WORKER_DEPENDENCY_CHECK_SECONDS);
+    let mut dependencies_ready = true;
     let metrics_server = MetricsServer::from_env(
         environment,
         RuntimeRole::AdminWorker,
@@ -1106,6 +1258,7 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
                 let now = match application.trusted_now().await {
                     Ok(now) => now,
                     Err(error) => {
+                        runtime_metrics.record_readiness(false);
                         runtime_metrics.record_background_iteration(BackgroundOutcome::Error);
                         tracing::error!(%error, "admin worker cleanup skipped because trusted time is unavailable");
                         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1113,6 +1266,22 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 };
                 let mut cleanup_failed = false;
+                if now >= next_dependency_check {
+                    dependencies_ready = true;
+                    if let Err(error) = keyring
+                        .worker_readiness_check(application.repository())
+                        .await
+                    {
+                        dependencies_ready = false;
+                        tracing::error!(%error, "admin worker keyring readiness check failed");
+                    }
+                    if let Err(error) = scanner.readiness_check().await {
+                        dependencies_ready = false;
+                        tracing::error!(%error, "admin worker malware-scanner readiness check failed");
+                    }
+                    next_dependency_check =
+                        now.saturating_add(WORKER_DEPENDENCY_CHECK_SECONDS);
+                }
                 if now >= next_secret_purge {
                     match advance_overdue_invoices(application.repository(), now).await {
                         Ok(advanced) if advanced > 0 => tracing::info!(advanced, "overdue invoices advanced by trusted-time worker"),
@@ -1148,13 +1317,20 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     next_secret_purge = now.saturating_add(60);
                 }
+                let iteration_ready = result.is_ok() && !cleanup_failed && dependencies_ready;
+                runtime_metrics.record_readiness(iteration_ready);
                 match result {
-                    Ok(_) if cleanup_failed => {
-                        runtime_metrics.record_background_iteration(BackgroundOutcome::Error);
-                    }
-                    Ok(true) => runtime_metrics.record_background_iteration(BackgroundOutcome::Success),
+                    Ok(true) => runtime_metrics.record_background_iteration(if iteration_ready {
+                        BackgroundOutcome::Success
+                    } else {
+                        BackgroundOutcome::Error
+                    }),
                     Ok(false) => {
-                        runtime_metrics.record_background_iteration(BackgroundOutcome::Idle);
+                        runtime_metrics.record_background_iteration(if iteration_ready {
+                            BackgroundOutcome::Idle
+                        } else {
+                            BackgroundOutcome::Error
+                        });
                         tokio::time::sleep(Duration::from_secs(1)).await;
                     }
                     Err(error) => {
@@ -1166,6 +1342,7 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    runtime_metrics.record_readiness(false);
     let _ = shutdown_tx.send(true);
     let _ = signal_task.await;
     if let Some(task) = metrics_task {
@@ -1332,13 +1509,13 @@ async fn retry_payment_evidence(
     Ok(())
 }
 
-async fn purge_stale_objects(
+pub(crate) async fn purge_stale_objects(
     repository: &PostgresRepository,
     storage: &ObjectStorageService,
     now: i64,
 ) -> Result<(), String> {
-    let ids: Vec<String> = sqlx::query_scalar(
-        "SELECT objects.id FROM stored_objects AS objects
+    let rows = sqlx::query(
+        "SELECT objects.id, objects.status FROM stored_objects AS objects
          WHERE objects.updated_at < $1 AND (
              objects.status IN ('staging', 'deleting')
              OR (
@@ -1355,12 +1532,34 @@ async fn purge_stale_objects(
     .fetch_all(&repository.pool)
     .await
     .map_err(|_| "database unavailable while loading stale objects".to_owned())?;
-    for id in ids {
-        storage
-            .delete(&id)
-            .await
-            .map_err(|error| error.to_string())?;
-        tracing::info!(object_id = id, "stale stored object removed");
+    for row in rows {
+        let id: String = row
+            .try_get("id")
+            .map_err(|_| "invalid stale object row".to_owned())?;
+        let status: String = row
+            .try_get("status")
+            .map_err(|_| "invalid stale object status".to_owned())?;
+        if status == StoredObjectStatus::Staging.as_str() {
+            match storage
+                .reconcile_staging(&id, now)
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                StagingReconciliation::Finalized => {
+                    tracing::info!(object_id = id, "staged stored object finalized");
+                }
+                StagingReconciliation::Removed => {
+                    tracing::info!(object_id = id, "invalid staged stored object removed");
+                }
+                StagingReconciliation::Unchanged => {}
+            }
+        } else {
+            storage
+                .delete(&id)
+                .await
+                .map_err(|error| error.to_string())?;
+            tracing::info!(object_id = id, "stale stored object removed");
+        }
     }
     Ok(())
 }
@@ -1513,6 +1712,33 @@ fn target_type(kind: BulkJobKind) -> &'static str {
     }
 }
 
+pub(crate) fn required_admin_permission(
+    kind: BulkJobKind,
+    parameters: &Value,
+) -> AdminJobResult<AdminPermission> {
+    match kind {
+        BulkJobKind::AccountSetState => Ok(
+            match parse_account_state(parameter_string(parameters, "state")?)? {
+                AccountState::Active | AccountState::Suspended => AdminPermission::AccountWrite,
+                AccountState::Denylisted => AdminPermission::AccountDenylist,
+            },
+        ),
+        BulkJobKind::LicenseSetStatus => Ok(AdminPermission::LicenseWrite),
+        BulkJobKind::ActivationCodeRevoke | BulkJobKind::ActivationCodeExpire => {
+            Ok(AdminPermission::CodeWrite)
+        }
+        BulkJobKind::DeviceSetState => Ok(
+            match parse_device_state(parameter_string(parameters, "state")?)? {
+                DeviceState::Removed => AdminPermission::DeviceRemove,
+                DeviceState::Revoked | DeviceState::Suspicious => AdminPermission::DeviceSecurity,
+                DeviceState::PendingActivation | DeviceState::Active => {
+                    return Err(AdminJobError::Validation("invalid device state".to_owned()));
+                }
+            },
+        ),
+    }
+}
+
 fn authorized_roles(kind: BulkJobKind, parameters: &Value) -> AdminJobResult<Vec<&'static str>> {
     let roles = match kind {
         BulkJobKind::AccountSetState => {
@@ -1585,7 +1811,9 @@ mod tests {
         let target_id = format!("account_{suffix}");
         let queued_id = format!("queued_{suffix}");
         let leased_id = format!("leased_{suffix}");
-        let application = AdminApplication::new(repository.clone(), 24 * 60 * 60);
+        let application = AdminApplication::new(repository.clone(), 24 * 60 * 60)
+            .await
+            .expect("initialize admin application");
         let now = application.trusted_now().await.expect("trusted time");
         sqlx::query(
             "INSERT INTO admin_users
@@ -1598,6 +1826,26 @@ mod tests {
         .execute(&repository.pool)
         .await
         .expect("insert admin user");
+        sqlx::query(
+            "INSERT INTO admin_password_credentials
+             (user_id, password_hash, key_id, changed_at)
+             VALUES ($1, 'test-only-hash', 'test-only-key', $2)",
+        )
+        .bind(&actor_id)
+        .bind(now)
+        .execute(&repository.pool)
+        .await
+        .expect("insert admin password credential");
+        sqlx::query(
+            "INSERT INTO admin_role_bindings
+             (user_id, role, granted_by, reason, created_at)
+             VALUES ($1, 'licensing_admin', 'test', 'bulk authorization test', $2)",
+        )
+        .bind(&actor_id)
+        .bind(now)
+        .execute(&repository.pool)
+        .await
+        .expect("insert admin role");
         sqlx::query(
             "INSERT INTO admin_sessions
              (id, user_id, token_hash, csrf_hash, auth_time, elevated_until,
@@ -1663,6 +1911,7 @@ mod tests {
         let preview = jobs
             .create_preview(
                 &actor_id,
+                &session_id,
                 CreatePreview {
                     kind: BulkJobKind::AccountSetState,
                     target_ids: vec![target_id.clone()],
@@ -1763,6 +2012,159 @@ mod tests {
             .execute(&repository.pool)
             .await
             .expect("delete bulk target");
+        sqlx::query("DELETE FROM admin_users WHERE id = $1")
+            .bind(&actor_id)
+            .execute(&repository.pool)
+            .await
+            .expect("delete admin user");
+        repository.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL"]
+    async fn expired_lease_reconciles_a_committed_item_without_reporting_failure() {
+        let database_url = std::env::var("TEST_DATABASE_URL")
+            .expect("TEST_DATABASE_URL is required for the PostgreSQL integration test");
+        let repository = PostgresRepository::connect(&database_url, 4, Duration::from_secs(5))
+            .await
+            .expect("connect PostgreSQL");
+        repository.migrate().await.expect("run migrations");
+        let application = AdminApplication::new(repository.clone(), 24 * 60 * 60)
+            .await
+            .expect("initialize admin application");
+        let now = application.trusted_now().await.expect("trusted time");
+        let suffix = random_id("job_fence_test");
+        let actor_id = format!("admin_{suffix}");
+        let target_id = format!("account_{suffix}");
+        let job_id = format!("job_{suffix}");
+        let operation_id = format!("{job_id}:0");
+
+        sqlx::query(
+            "INSERT INTO admin_users
+             (id, username, display_name, status, created_at, updated_at)
+             VALUES ($1, $2, 'Lease fencing test', 'active', $3, $3)",
+        )
+        .bind(&actor_id)
+        .bind(format!("lease-{suffix}"))
+        .bind(now)
+        .execute(&repository.pool)
+        .await
+        .expect("insert admin user");
+        sqlx::query(
+            "INSERT INTO admin_role_bindings
+             (user_id, role, granted_by, reason, created_at)
+             VALUES ($1, 'platform_owner', $1, 'lease fencing test', $2)",
+        )
+        .bind(&actor_id)
+        .bind(now)
+        .execute(&repository.pool)
+        .await
+        .expect("insert admin role");
+        repository
+            .upsert_account(crate::domain::Account::active(&target_id, now))
+            .await
+            .expect("insert account");
+
+        let mut context = MutationContext::new(
+            AdminPrincipal::cli(&actor_id).unwrap(),
+            "lease fencing test",
+        )
+        .unwrap();
+        context.operation_id = Some(operation_id.clone());
+        context.job_id = Some(job_id.clone());
+        application
+            .set_account_state(&target_id, AccountState::Suspended, Some(1), &context)
+            .await
+            .expect("commit item business transaction before result persistence");
+
+        sqlx::query(
+            "INSERT INTO admin_bulk_jobs
+             (id, kind, status, actor_id, reason, idempotency_key, request_hash,
+              parameters, total_items, lease_owner, lease_expires_at, lease_generation,
+              created_at, started_at)
+             VALUES ($1, 'account_set_state', 'running', $2, 'lease fencing test', $1,
+                     repeat('0', 64), '{\"state\":\"suspended\"}'::jsonb, 1, $3, $4, 1,
+                     $5, $5)",
+        )
+        .bind(&job_id)
+        .bind(&actor_id)
+        .bind("reused-worker-id")
+        .bind(now.saturating_sub(1))
+        .bind(now.saturating_sub(120))
+        .execute(&repository.pool)
+        .await
+        .expect("insert expired leased job");
+        sqlx::query(
+            "INSERT INTO admin_bulk_job_items
+             (job_id, ordinal, target_type, target_id, expected_version, status,
+              attempts, lease_generation, started_at)
+             VALUES ($1, 0, 'account', $2, 1, 'running', 1, 1, $3)",
+        )
+        .bind(&job_id)
+        .bind(&target_id)
+        .bind(now.saturating_sub(120))
+        .execute(&repository.pool)
+        .await
+        .expect("insert item left running after business commit");
+
+        let jobs = AdminJobService::new(application);
+        assert!(
+            jobs.run_once("reused-worker-id")
+                .await
+                .expect("reconcile expired lease")
+        );
+        let (job_status, generation): (String, i64) =
+            sqlx::query_as("SELECT status, lease_generation FROM admin_bulk_jobs WHERE id = $1")
+                .bind(&job_id)
+                .fetch_one(&repository.pool)
+                .await
+                .expect("load reconciled job");
+        assert_eq!(job_status, "succeeded");
+        assert_eq!(generation, 2);
+        let (item_status, error_code): (String, Option<String>) = sqlx::query_as(
+            "SELECT status, error_code FROM admin_bulk_job_items
+             WHERE job_id = $1 AND ordinal = 0",
+        )
+        .bind(&job_id)
+        .fetch_one(&repository.pool)
+        .await
+        .expect("load reconciled item");
+        assert_eq!(item_status, "succeeded");
+        assert_eq!(error_code, None);
+        let operations: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM admin_operations WHERE operation_id = $1")
+                .bind(&operation_id)
+                .fetch_one(&repository.pool)
+                .await
+                .expect("count idempotent operations");
+        assert_eq!(operations, 1);
+        let successful_audits: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM audit_events
+             WHERE event_type = 'account_state_set'
+               AND metadata ->> 'job_id' = $1
+               AND outcome = 'succeeded'",
+        )
+        .bind(&job_id)
+        .fetch_one(&repository.pool)
+        .await
+        .expect("count business audits");
+        assert_eq!(successful_audits, 1);
+
+        sqlx::query("DELETE FROM admin_bulk_jobs WHERE id = $1")
+            .bind(&job_id)
+            .execute(&repository.pool)
+            .await
+            .expect("delete job");
+        sqlx::query("DELETE FROM admin_operations WHERE operation_id = $1")
+            .bind(&operation_id)
+            .execute(&repository.pool)
+            .await
+            .expect("delete operation");
+        sqlx::query("DELETE FROM accounts WHERE id = $1")
+            .bind(&target_id)
+            .execute(&repository.pool)
+            .await
+            .expect("delete account");
         sqlx::query("DELETE FROM admin_users WHERE id = $1")
             .bind(&actor_id)
             .execute(&repository.pool)

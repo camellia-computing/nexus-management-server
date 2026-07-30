@@ -6,6 +6,7 @@ use sqlx::Row;
 use thiserror::Error;
 
 use crate::{
+    admin_auth::AdminPermission,
     admin_operation::{self, AdminOperationClaim},
     config::time_max_forward_jump_seconds_from_env,
     contracts::{DeviceState, Plan},
@@ -25,6 +26,7 @@ use crate::{
         ActivationCodeBatchCommit, ActivationCodeDeliveryReceipt, AdminSecretDeliveryInsert,
         LicenseRepository, PostgresRepository, TimeAuthorityStatus,
     },
+    time_authority::PersistentTimeAuthority,
 };
 
 const DEFAULT_PAGE_SIZE: u32 = 50;
@@ -46,6 +48,8 @@ pub enum AdminAppError {
     SecretReplayUnavailable,
     #[error("permission denied")]
     PermissionDenied,
+    #[error("recent password and TOTP verification is required")]
+    StepUpRequired,
     #[error("secret delivery could not be prepared")]
     SecretDelivery,
     #[error(transparent)]
@@ -325,24 +329,42 @@ struct PreparedActivationCodeBatch {
 #[derive(Clone)]
 pub struct AdminApplication {
     repository: PostgresRepository,
-    time_max_forward_jump_seconds: i64,
+    persistent_time: PersistentTimeAuthority,
 }
 
 impl AdminApplication {
-    pub fn new(repository: PostgresRepository, time_max_forward_jump_seconds: i64) -> Self {
-        Self {
-            repository,
-            time_max_forward_jump_seconds,
+    pub async fn new(
+        repository: PostgresRepository,
+        time_max_forward_jump_seconds: i64,
+    ) -> AdminAppResult<Self> {
+        if time_max_forward_jump_seconds <= 0 {
+            return Err(AdminAppError::Validation(
+                "time authority maximum forward jump must be positive".to_owned(),
+            ));
         }
+        let observation = repository
+            .observe_time_authority(None, time_max_forward_jump_seconds)
+            .await?;
+        if observation.status == TimeAuthorityStatus::ForwardJump {
+            return Err(ApiError::TimeAuthorityUnavailable.into());
+        }
+        Ok(Self {
+            repository,
+            persistent_time: PersistentTimeAuthority::new(
+                observation.trusted_unix,
+                time_max_forward_jump_seconds,
+            ),
+        })
     }
 
-    pub fn from_environment(repository: PostgresRepository) -> AdminAppResult<Self> {
-        Ok(Self::new(
+    pub async fn from_environment(repository: PostgresRepository) -> AdminAppResult<Self> {
+        Self::new(
             repository,
             time_max_forward_jump_seconds_from_env().map_err(|error| {
                 AdminAppError::Validation(format!("invalid time authority configuration: {error}"))
             })?,
-        ))
+        )
+        .await
     }
 
     pub fn repository(&self) -> &PostgresRepository {
@@ -352,8 +374,12 @@ impl AdminApplication {
     pub async fn trusted_now(&self) -> AdminAppResult<i64> {
         let observation = self
             .repository
-            .observe_time_authority(None, self.time_max_forward_jump_seconds)
+            .observe_time_authority(
+                Some(self.persistent_time.now()),
+                self.persistent_time.max_forward_jump_seconds,
+            )
             .await?;
+        self.persistent_time.observe(observation.trusted_unix);
         if observation.status == TimeAuthorityStatus::ForwardJump {
             Err(ApiError::TimeAuthorityUnavailable.into())
         } else {
@@ -561,7 +587,13 @@ impl AdminApplication {
         account.note = note;
         let audit = admin_audit("account_created", context, Some(id), None, None, now);
         self.repository
-            .create_account_with_audit(account, audit, operation.as_ref())
+            .create_account_with_audit(
+                account,
+                audit,
+                operation.as_ref(),
+                context,
+                AdminPermission::AccountWrite,
+            )
             .await
     }
 
@@ -600,6 +632,11 @@ impl AdminApplication {
             account.updated_at = now;
         }
         let audit = admin_audit("account_state_set", context, Some(id), None, None, now);
+        let permission = if state == AccountState::Denylisted {
+            AdminPermission::AccountDenylist
+        } else {
+            AdminPermission::AccountWrite
+        };
         self.repository
             .update_account_with_audit(
                 account,
@@ -607,6 +644,8 @@ impl AdminApplication {
                 changed && state != AccountState::Active,
                 audit,
                 operation.as_ref(),
+                context,
+                permission,
             )
             .await
     }
@@ -667,7 +706,7 @@ impl AdminApplication {
             now,
         );
         self.repository
-            .upsert_license_with_audit(license, None, audit, operation.as_ref())
+            .upsert_license_with_audit(license, None, audit, operation.as_ref(), context)
             .await
     }
 
@@ -714,7 +753,7 @@ impl AdminApplication {
             self.trusted_now().await?,
         );
         self.repository
-            .upsert_license_with_audit(license, Some(before), audit, operation.as_ref())
+            .upsert_license_with_audit(license, Some(before), audit, operation.as_ref(), context)
             .await
     }
 
@@ -764,6 +803,12 @@ impl AdminApplication {
                 now,
                 audit,
                 operation.as_ref(),
+                context,
+                if matches!(state, DeviceState::Revoked | DeviceState::Suspicious) {
+                    AdminPermission::DeviceSecurity
+                } else {
+                    AdminPermission::DeviceRemove
+                },
             )
             .await?
             .ok_or(AdminAppError::VersionConflict)
@@ -862,6 +907,7 @@ impl AdminApplication {
                 expected_version,
                 audit,
                 operation.as_ref(),
+                context,
             )
             .await?;
         updated.ok_or(AdminAppError::VersionConflict)
@@ -893,8 +939,7 @@ impl AdminApplication {
             .issue_activation_code_batch(
                 &operation_id,
                 &prepared.request_hash,
-                &context.principal.id,
-                &context.reason,
+                context,
                 &prepared.records,
                 &prepared.audits,
             )
@@ -950,8 +995,7 @@ impl AdminApplication {
             .issue_activation_code_batch_with_delivery(
                 &operation_id,
                 &prepared.request_hash,
-                &context.principal.id,
-                &context.reason,
+                context,
                 &prepared.records,
                 &prepared.audits,
                 Some(&delivery),
@@ -1341,6 +1385,58 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL"]
+    async fn admin_trusted_time_advances_while_database_clock_is_held_back() {
+        let database_url = std::env::var("TEST_DATABASE_URL")
+            .expect("TEST_DATABASE_URL is required for the PostgreSQL integration test");
+        let repository =
+            PostgresRepository::connect(&database_url, 2, std::time::Duration::from_secs(5))
+                .await
+                .expect("connect PostgreSQL");
+        repository.migrate().await.expect("run migrations");
+        let held_high_water: i64 = sqlx::query_scalar(
+            "UPDATE service_time_authority
+             SET high_water_unix =
+                   floor(extract(epoch FROM clock_timestamp()))::BIGINT + 30,
+                 last_database_unix =
+                   floor(extract(epoch FROM clock_timestamp()))::BIGINT,
+                 status = 'rollback_held'
+             WHERE singleton = 1
+             RETURNING high_water_unix",
+        )
+        .fetch_one(&repository.pool)
+        .await
+        .expect("hold database time behind the durable high-water mark");
+        let application = AdminApplication::new(repository.clone(), 24 * 60 * 60)
+            .await
+            .expect("initialize Admin time authority during rollback");
+        let first = application.trusted_now().await.expect("first trusted time");
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let advanced = application
+            .trusted_now()
+            .await
+            .expect("monotonic trusted time");
+
+        sqlx::query(
+            "UPDATE service_time_authority
+             SET high_water_unix = floor(extract(epoch FROM clock_timestamp()))::BIGINT,
+                 last_database_unix = floor(extract(epoch FROM clock_timestamp()))::BIGINT,
+                 status = 'healthy'
+             WHERE singleton = 1",
+        )
+        .execute(&repository.pool)
+        .await
+        .expect("restore test time authority");
+        repository.pool.close().await;
+
+        assert_eq!(first, held_high_water);
+        assert!(
+            advanced >= first.saturating_add(1),
+            "Admin expirations must progress during a database clock rollback"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL"]
     async fn core_admin_mutations_replay_the_committed_response() {
         let database_url = std::env::var("TEST_DATABASE_URL")
             .expect("TEST_DATABASE_URL is required for the PostgreSQL integration test");
@@ -1349,7 +1445,9 @@ mod tests {
                 .await
                 .expect("connect PostgreSQL");
         repository.migrate().await.expect("run migrations");
-        let application = AdminApplication::new(repository.clone(), 24 * 60 * 60);
+        let application = AdminApplication::new(repository.clone(), 24 * 60 * 60)
+            .await
+            .expect("initialize admin application");
         let suffix = random_id("core_operation_test");
         let actor = format!("admin_{suffix}");
         let account_id = format!("account_{suffix}");
@@ -1619,5 +1717,135 @@ mod tests {
         .await
         .expect("count committed operations");
         assert_eq!(operation_count, 6);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL"]
+    async fn admin_mutation_rechecks_revoked_role_in_the_commit_transaction() {
+        let database_url = std::env::var("TEST_DATABASE_URL")
+            .expect("TEST_DATABASE_URL is required for the PostgreSQL integration test");
+        let repository =
+            PostgresRepository::connect(&database_url, 2, std::time::Duration::from_secs(5))
+                .await
+                .expect("connect PostgreSQL");
+        repository.migrate().await.expect("run migrations");
+        let application = AdminApplication::new(repository.clone(), 24 * 60 * 60)
+            .await
+            .expect("initialize admin application");
+        let suffix = random_id("admin_commit_auth_test");
+        let actor_id = format!("admin_{suffix}");
+        let session_id = format!("session_{suffix}");
+        let account_id = format!("account_{suffix}");
+        let operation_id = format!("create-account-{suffix}");
+        let now = application.trusted_now().await.expect("trusted time");
+        let mut setup = repository.pool.begin().await.expect("begin fixture");
+        sqlx::query(
+            "INSERT INTO admin_users
+             (id, username, display_name, status, created_at, updated_at)
+             VALUES ($1, $2, 'Commit authorization test', 'active', $3, $3)",
+        )
+        .bind(&actor_id)
+        .bind(format!("commit-{}", &sha256_hex(&suffix)[..16]))
+        .bind(now)
+        .execute(&mut *setup)
+        .await
+        .expect("insert administrator");
+        sqlx::query(
+            "INSERT INTO admin_password_credentials
+             (user_id, password_hash, key_id, changed_at)
+             VALUES ($1, 'test-only-hash', 'test-only-key', $2)",
+        )
+        .bind(&actor_id)
+        .bind(now)
+        .execute(&mut *setup)
+        .await
+        .expect("insert password credential");
+        sqlx::query(
+            "INSERT INTO admin_role_bindings
+             (user_id, role, granted_by, reason, created_at)
+             VALUES ($1, 'licensing_admin', 'test', 'commit authorization test', $2)",
+        )
+        .bind(&actor_id)
+        .bind(now)
+        .execute(&mut *setup)
+        .await
+        .expect("insert role");
+        sqlx::query(
+            "INSERT INTO admin_sessions
+             (id, user_id, token_hash, csrf_hash, auth_time, elevated_until,
+              last_seen_at, expires_at, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $5, $6, $5)",
+        )
+        .bind(&session_id)
+        .bind(&actor_id)
+        .bind(sha256_hex(&format!("token-{suffix}")))
+        .bind(sha256_hex(&format!("csrf-{suffix}")))
+        .bind(now)
+        .bind(now.saturating_add(3_600))
+        .execute(&mut *setup)
+        .await
+        .expect("insert session");
+        setup.commit().await.expect("commit fixture");
+
+        // Model request authentication caching the role before a concurrent revocation.
+        let initially_authorized: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1 FROM admin_role_bindings
+                 WHERE user_id = $1 AND role = 'licensing_admin'
+             )",
+        )
+        .bind(&actor_id)
+        .fetch_one(&repository.pool)
+        .await
+        .expect("read initial role");
+        assert!(initially_authorized);
+        sqlx::query("DELETE FROM admin_role_bindings WHERE user_id = $1")
+            .bind(&actor_id)
+            .execute(&repository.pool)
+            .await
+            .expect("revoke role after request authentication");
+
+        let mut context = MutationContext::new(
+            AdminPrincipal {
+                id: actor_id.clone(),
+                session_id: Some(session_id),
+                source_ip: Some("127.0.0.1".to_owned()),
+                user_agent_hash: None,
+                request_id: None,
+            },
+            "verify final transaction authorization",
+        )
+        .expect("mutation context");
+        context.operation_id = Some(operation_id.clone());
+        assert!(matches!(
+            application
+                .create_account(&account_id, None, &context)
+                .await,
+            Err(AdminAppError::PermissionDenied)
+        ));
+        let account_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM accounts WHERE id = $1)")
+                .bind(&account_id)
+                .fetch_one(&repository.pool)
+                .await
+                .expect("check denied account");
+        let operation_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1 FROM admin_operations WHERE operation_id = $1
+             )",
+        )
+        .bind(&operation_id)
+        .fetch_one(&repository.pool)
+        .await
+        .expect("check denied operation");
+        assert!(!account_exists);
+        assert!(!operation_exists);
+
+        sqlx::query("DELETE FROM admin_users WHERE id = $1")
+            .bind(&actor_id)
+            .execute(&repository.pool)
+            .await
+            .expect("delete administrator fixture");
+        repository.pool.close().await;
     }
 }

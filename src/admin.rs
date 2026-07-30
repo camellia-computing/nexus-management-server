@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use crate::{
     admin_app::{
         ActivationCodeBatchRequest, ActivationCodeExpiry, AdminApplication, AdminPrincipal,
-        MutationContext, NewLicense, apply_license_plan,
+        MutationContext, NewLicense, PageRequest, apply_license_plan,
     },
     admin_auth::{AdminAuthService, AdminKeyring, normalize_username},
     admin_identity::AdminIdentityService,
@@ -40,7 +40,7 @@ pub async fn run(args: Vec<String>) -> AdminResult<()> {
         return Ok(());
     }
     let repository = admin_repository().await?;
-    let application = AdminApplication::from_environment(repository.clone())?;
+    let application = AdminApplication::from_environment(repository.clone()).await?;
     match args[0].as_str() {
         "account" => account(&application, &args[1..], output).await,
         "license" => license(&application, &args[1..], output).await,
@@ -175,7 +175,7 @@ async fn billing_offer(
             let actor = required_flag(&flags, "actor", 128)?;
             let reason = required_flag(&flags, "reason", 512)?;
             let offer = repository
-                .create_commercial_offer(&offer, &actor, &reason, None)
+                .create_commercial_offer(&offer, &actor, &reason, None, None)
                 .await?;
             print_json(output, &offer)?;
         }
@@ -224,7 +224,7 @@ async fn billing_method(
             let actor = required_flag(&flags, "actor", 128)?;
             let reason = required_flag(&flags, "reason", 512)?;
             let method = repository
-                .create_manual_payment_method(&method, &actor, &reason, None)
+                .create_manual_payment_method(&method, &actor, &reason, None, None)
                 .await?;
             print_json(output, &method)?;
         }
@@ -241,10 +241,12 @@ async fn billing_invoice(
 ) -> AdminResult<()> {
     match args.first().map(String::as_str) {
         Some("list") => {
-            let flags = Flags::new(&args[1..], &["account"])?;
+            let flags = Flags::new(&args[1..], &["account", "cursor", "page-size", "query"])?;
             print_json(
                 output,
-                &repository.billing_invoices(flags.value("account")).await?,
+                &repository
+                    .billing_invoices(flags.value("account"), page_request(&flags)?)
+                    .await?,
             )?;
         }
         Some("create") => {
@@ -281,6 +283,7 @@ async fn billing_invoice(
                     &reason,
                     now,
                     None,
+                    None,
                 )
                 .await?;
             print_json(output, &invoice)?;
@@ -298,12 +301,17 @@ async fn billing_payment(
 ) -> AdminResult<()> {
     match args.first().map(String::as_str) {
         Some("list") => {
-            let flags = Flags::new(&args[1..], &["status"])?;
+            let flags = Flags::new(&args[1..], &["status", "cursor", "page-size", "query"])?;
             let status = flags
                 .value("status")
                 .map(PaymentClaimStatus::from_str)
                 .transpose()?;
-            print_json(output, &repository.manual_payment_claims(status).await?)?;
+            print_json(
+                output,
+                &repository
+                    .manual_payment_claims(status, page_request(&flags)?)
+                    .await?,
+            )?;
         }
         Some("submit") => {
             let id = required(args, 1, "payment claim id")?;
@@ -390,6 +398,7 @@ async fn billing_payment(
                     &operation_id,
                     allow_amount_override,
                     now,
+                    None,
                 )
                 .await?;
             print_json(output, &claim)?;
@@ -1071,6 +1080,20 @@ fn parse_bounded_u32(value: &str, minimum: u32, maximum: u32, label: &str) -> Ad
         return Err(format!("{label} must be between {minimum} and {maximum}").into());
     }
     Ok(value)
+}
+
+fn page_request(flags: &Flags<'_>) -> AdminResult<PageRequest> {
+    let page_size = flags
+        .value("page-size")
+        .map(|value| parse_bounded_u32(value, 1, 100, "page size"))
+        .transpose()?
+        .unwrap_or_else(|| PageRequest::default().page_size);
+    let request = PageRequest {
+        cursor: flags.value("cursor").map(str::to_owned),
+        page_size,
+        query: flags.value("query").map(str::to_owned),
+    };
+    Ok(request.validate()?)
 }
 
 fn parse_positive_u64(value: &str, label: &str) -> AdminResult<u64> {

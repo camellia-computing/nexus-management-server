@@ -414,12 +414,37 @@ test('the final image supports complete real control-plane journeys', async ({ p
   const invoicePage = await adminRequest(page, 'GET', '/billing/invoices');
   expect(invoicePage.ok()).toBe(true);
   expect(
-    ((await invoicePage.json()) as Array<{ id: string }>).some(
-      (invoice) => invoice.id === liveInvoiceId
-    )
+    (
+      (await invoicePage.json()) as {
+        items: Array<{ id: string }>;
+        nextCursor: string | null;
+      }
+    ).items.some((invoice) => invoice.id === liveInvoiceId)
   ).toBe(true);
 
+  await expect(page.getByRole('tab', { name: /^Invoices/u })).toHaveAttribute(
+    'aria-selected',
+    'true'
+  );
+  const claimPageResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      response.request().method() === 'GET' &&
+      url.pathname === '/api/v1/billing/payment-claims' &&
+      url.searchParams.get('pageSize') === '50'
+    );
+  });
   await page.getByRole('tab', { name: /^Payment review/u }).click();
+  const claimPage = await claimPageResponse;
+  expect(claimPage.ok()).toBe(true);
+  expect(
+    (
+      (await claimPage.json()) as {
+        items: Array<{ id: string }>;
+        nextCursor: string | null;
+      }
+    ).items.some((claim) => claim.id === credentials.paymentClaimId)
+  ).toBe(true);
   const claimRow = page.locator('tr').filter({ hasText: credentials.paymentClaimId });
   await expect(claimRow).toBeVisible();
   await claimRow.getByRole('button', { name: 'Manage' }).click();
@@ -435,12 +460,15 @@ test('the final image supports complete real control-plane journeys', async ({ p
   const reviewedClaims = await adminRequest(page, 'GET', '/billing/payment-claims');
   expect(reviewedClaims.ok()).toBe(true);
   const reviewedClaim = (
-    (await reviewedClaims.json()) as Array<{
-      id: string;
-      status: string;
-      reviewReason: string | null;
-    }>
-  ).find((claim) => claim.id === credentials.paymentClaimId);
+    (await reviewedClaims.json()) as {
+      items: Array<{
+        id: string;
+        status: string;
+        reviewReason: string | null;
+      }>;
+      nextCursor: string | null;
+    }
+  ).items.find((claim) => claim.id === credentials.paymentClaimId);
   expect(reviewedClaim).toMatchObject({
     status: 'verified',
     reviewReason: 'ClamAV verified the clean synthetic PDF'

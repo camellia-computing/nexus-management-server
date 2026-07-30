@@ -1,6 +1,6 @@
 use jsonwebtoken::{
     Algorithm, AlgorithmFamily, DecodingKey, EncodingKey,
-    crypto::{CryptoProvider, JwkUtils, JwtSigner, JwtVerifier},
+    crypto::{CryptoProvider, JwtSigner, JwtVerifier, KeyUtils},
     errors::{ErrorKind, Result, new_error},
     signature::{Error as SignatureError, Signer, Verifier},
 };
@@ -14,7 +14,7 @@ use p256::{
 static ES256_PROVIDER: CryptoProvider = CryptoProvider {
     signer_factory,
     verifier_factory,
-    jwk_utils: JwkUtils::new_unimplemented(),
+    key_utils: KeyUtils::new_unimplemented(),
 };
 
 pub(crate) fn ensure_installed() {
@@ -42,7 +42,7 @@ impl Es256Signer {
         if key.family() != AlgorithmFamily::Ec {
             return Err(new_error(ErrorKind::InvalidKeyFormat));
         }
-        SigningKey::from_pkcs8_der(key.inner())
+        SigningKey::from_pkcs8_der(key.as_bytes())
             .map(Self)
             .map_err(|_| new_error(ErrorKind::InvalidEcdsaKey))
     }
@@ -68,7 +68,7 @@ impl Es256Verifier {
         if key.family() != AlgorithmFamily::Ec {
             return Err(new_error(ErrorKind::InvalidKeyFormat));
         }
-        VerifyingKey::from_sec1_bytes(key.as_bytes())
+        VerifyingKey::from_sec1_bytes(key.try_get_as_bytes()?)
             .map(Self)
             .map_err(|_| new_error(ErrorKind::InvalidEcdsaKey))
     }
