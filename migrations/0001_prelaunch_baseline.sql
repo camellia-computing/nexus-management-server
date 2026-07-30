@@ -745,13 +745,15 @@ CREATE TABLE public.stored_objects (
     wrapped_key bytea NOT NULL,
     content_nonce bytea NOT NULL,
     status text NOT NULL,
+    staging_target_status text,
     created_by text NOT NULL,
     created_at bigint NOT NULL,
     updated_at bigint NOT NULL,
     CONSTRAINT stored_objects_backend_check CHECK ((backend = ANY (ARRAY['filesystem'::text, 'database'::text, 's3'::text]))),
     CONSTRAINT stored_objects_byte_length_check CHECK ((byte_length >= 0)),
     CONSTRAINT stored_objects_sha256_check CHECK ((sha256 ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT stored_objects_status_check CHECK ((status = ANY (ARRAY['staging'::text, 'quarantined'::text, 'ready'::text, 'rejected'::text, 'deleting'::text])))
+    CONSTRAINT stored_objects_status_check CHECK ((status = ANY (ARRAY['staging'::text, 'quarantined'::text, 'ready'::text, 'rejected'::text, 'deleting'::text]))),
+    CONSTRAINT stored_objects_staging_target_check CHECK (((status = 'staging'::text AND backend <> 'database'::text AND staging_target_status = ANY (ARRAY['quarantined'::text, 'ready'::text, 'rejected'::text])) OR (status <> 'staging'::text AND staging_target_status IS NULL)))
 );
 
 CREATE TABLE public.team_invitations (

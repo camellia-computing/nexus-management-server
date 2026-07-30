@@ -12,7 +12,7 @@ server-side authorization.
 | Layer / 层级 | Required proof / 必须证明 |
 | --- | --- |
 | Rust unit and service tests | Parsing, cryptography, state transitions, permissions, idempotency, pagination, errors, and bounded behavior |
-| PostgreSQL integration | Transactions, row versions, trusted time, replica-safe rate limits, migrations, concurrency, jobs, and persistence |
+| PostgreSQL integration | Transactions, row versions, trusted time, replica-safe rate limits, migrations, concurrency, jobs, persistence, and external-object ambiguity reconciliation |
 | Deployment contracts | Four distinct OS and database identities, systemd ordering/hardening, private per-role metrics, denied public access to Admin data/DDL, and production configuration failure modes |
 | Admin UI deterministic browser tests | Themes, localization, responsive/overflow states, dialogs, keyboard/focus, errors, PWA installation metadata, and interactions across fixed fixtures |
 | Final-container runtime | Image metadata, migrations, CLI mutations, public and Admin roles, PWA/static headers, hardening, readiness, worker startup, real authentication, Team operations, and logout |
@@ -72,6 +72,16 @@ plaintext. The desktop browser test injects a
 post-commit lost response and proves the visible retry sends the same request and `operationId` and
 recovers the original secret. These tests complement, rather than replace, final-container and native
 Windows coverage.
+
+Object-storage fault-injection tests use a fake external backend to commit bytes before returning a
+failed `put`, proving that the staging metadata survives and the worker can authenticate and finalize
+the object. The same fake replaces a valid object with an oversized body and can falsify HEAD/GET
+lengths, proving that metadata preflight prevents an unnecessary body request and that the streaming
+hard cap remains authoritative when remote metadata is wrong.
+
+对象存储故障注入测试使用 fake 外部后端，在字节已经提交后让 `put` 返回失败，以证明 staging
+元数据会被保留，worker 能认证并完成对象提交。同一 fake 还会用超大正文替换合法对象并伪造
+HEAD/GET 长度，以证明元数据预检可避免不必要的正文请求，且远端元数据错误时流式绝对上限仍然有效。
 
 运行时测试会创建隔离的 PostgreSQL 数据库、管理员注册因素与会话、账户、Team 授权、一次性交付、
 账单夹具、合成 PDF、固定 ClamAV 扫描器、Worker 和加固容器。一次性预过期浏览器会话验证真实

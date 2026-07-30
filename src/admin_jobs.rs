@@ -22,7 +22,7 @@ use crate::{
     admin_operation,
     admin_storage::{
         EvidenceScanner, ObjectStorageConfig, ObjectStorageError, ObjectStorageService,
-        StoredObjectStatus,
+        StagingReconciliation, StoredObjectStatus,
     },
     config::{Environment, database_pool_config_from_env, time_max_forward_jump_seconds_from_env},
     contracts::DeviceState,
@@ -1421,13 +1421,13 @@ async fn retry_payment_evidence(
     Ok(())
 }
 
-async fn purge_stale_objects(
+pub(crate) async fn purge_stale_objects(
     repository: &PostgresRepository,
     storage: &ObjectStorageService,
     now: i64,
 ) -> Result<(), String> {
-    let ids: Vec<String> = sqlx::query_scalar(
-        "SELECT objects.id FROM stored_objects AS objects
+    let rows = sqlx::query(
+        "SELECT objects.id, objects.status FROM stored_objects AS objects
          WHERE objects.updated_at < $1 AND (
              objects.status IN ('staging', 'deleting')
              OR (
@@ -1444,12 +1444,34 @@ async fn purge_stale_objects(
     .fetch_all(&repository.pool)
     .await
     .map_err(|_| "database unavailable while loading stale objects".to_owned())?;
-    for id in ids {
-        storage
-            .delete(&id)
-            .await
-            .map_err(|error| error.to_string())?;
-        tracing::info!(object_id = id, "stale stored object removed");
+    for row in rows {
+        let id: String = row
+            .try_get("id")
+            .map_err(|_| "invalid stale object row".to_owned())?;
+        let status: String = row
+            .try_get("status")
+            .map_err(|_| "invalid stale object status".to_owned())?;
+        if status == StoredObjectStatus::Staging.as_str() {
+            match storage
+                .reconcile_staging(&id, now)
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                StagingReconciliation::Finalized => {
+                    tracing::info!(object_id = id, "staged stored object finalized");
+                }
+                StagingReconciliation::Removed => {
+                    tracing::info!(object_id = id, "invalid staged stored object removed");
+                }
+                StagingReconciliation::Unchanged => {}
+            }
+        } else {
+            storage
+                .delete(&id)
+                .await
+                .map_err(|error| error.to_string())?;
+            tracing::info!(object_id = id, "stale stored object removed");
+        }
     }
     Ok(())
 }
