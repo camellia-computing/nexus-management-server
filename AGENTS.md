@@ -179,6 +179,9 @@ addresses, customer data, credentials, or machine-local procedures here.
   and a ten-minute step-up window. The Admin UI may keep an active session alive only at low
   frequency while the page is visible and recent user interaction is present; background or
   unattended tabs must not be kept alive.
+- Bind every session and final login/step-up write to the current password credential epoch.
+  Password rotation advances that epoch atomically, so work that verified an older credential can
+  never create or elevate a session after the rotation commits.
 - Administrator usernames are immutable sign-in and audit identifiers. An active administrator may
   change their own display name or password with step-up, reason, idempotency, and row-version
   protection; a password change revokes every session. Offline Owner recovery requires exact

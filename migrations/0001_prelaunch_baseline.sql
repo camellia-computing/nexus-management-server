@@ -371,7 +371,9 @@ CREATE TABLE public.admin_password_credentials (
     user_id text NOT NULL,
     password_hash text NOT NULL,
     key_id text NOT NULL,
-    changed_at bigint NOT NULL
+    changed_at bigint NOT NULL,
+    credential_epoch bigint DEFAULT 1 NOT NULL,
+    CONSTRAINT admin_password_credentials_epoch_check CHECK ((credential_epoch > 0))
 );
 
 CREATE TABLE public.admin_recovery_codes (
@@ -422,7 +424,9 @@ CREATE TABLE public.admin_sessions (
     expires_at bigint NOT NULL,
     revoked_at bigint,
     created_at bigint NOT NULL,
+    credential_epoch bigint DEFAULT 1 NOT NULL,
     CONSTRAINT admin_sessions_check CHECK ((expires_at > created_at)),
+    CONSTRAINT admin_sessions_epoch_check CHECK ((credential_epoch > 0)),
     CONSTRAINT admin_sessions_csrf_hash_check CHECK ((csrf_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT admin_sessions_token_hash_check CHECK ((token_hash ~ '^[0-9a-f]{64}$'::text))
 );

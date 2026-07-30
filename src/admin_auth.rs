@@ -836,7 +836,7 @@ impl AdminAuthService {
         .execute(&mut *tx)
         .await
         .map_err(|_| ApiError::Database)?;
-        let session = create_session(&mut tx, &user_id, source_ip, user_agent, now).await?;
+        let session = create_session(&mut tx, &user_id, 1, source_ip, user_agent, now).await?;
         let actor: String = row.try_get("created_by").map_err(|_| ApiError::Database)?;
         let reason: String = row.try_get("reason").map_err(|_| ApiError::Database)?;
         insert_auth_audit(
@@ -873,6 +873,7 @@ impl AdminAuthService {
         self.check_login_bucket(&bucket_key, now).await?;
         let row = sqlx::query(
             "SELECT u.id, u.username, u.status, p.password_hash, p.key_id,
+                    p.credential_epoch,
                     t.key_id AS totp_key_id, t.nonce, t.ciphertext, t.last_used_step
              FROM admin_users u
              JOIN admin_password_credentials p ON p.user_id = u.id
@@ -921,6 +922,9 @@ impl AdminAuthService {
         }
         let row = row.expect("eligible administrator row exists");
         let user_id: String = row.try_get("id").map_err(|_| ApiError::Database)?;
+        let credential_epoch: i64 = row
+            .try_get("credential_epoch")
+            .map_err(|_| ApiError::Database)?;
         let totp_key_id: String = row.try_get("totp_key_id").map_err(|_| ApiError::Database)?;
         let mut secret = decrypt_secret(
             &self.keyring,
@@ -954,10 +958,18 @@ impl AdminAuthService {
             .map_err(|_| ApiError::Database)?;
         let updated = sqlx::query(
             "UPDATE admin_totp_credentials SET last_used_step = $2
-             WHERE user_id = $1 AND (last_used_step IS NULL OR last_used_step < $2)",
+             WHERE user_id = $1 AND (last_used_step IS NULL OR last_used_step < $2)
+               AND EXISTS (
+                 SELECT 1
+                 FROM admin_password_credentials p
+                 JOIN admin_users u ON u.id = p.user_id
+                 WHERE p.user_id = $1 AND p.credential_epoch = $3
+                   AND u.status = 'active'
+               )",
         )
         .bind(&user_id)
         .bind(step)
+        .bind(credential_epoch)
         .execute(&mut *tx)
         .await
         .map_err(|_| ApiError::Database)?
@@ -968,7 +980,15 @@ impl AdminAuthService {
                 .await?;
             return Err(AdminAuthError::InvalidCredentials);
         }
-        let session = create_session(&mut tx, &user_id, source_ip, user_agent, now).await?;
+        let session = create_session(
+            &mut tx,
+            &user_id,
+            credential_epoch,
+            source_ip,
+            user_agent,
+            now,
+        )
+        .await?;
         sqlx::query("DELETE FROM admin_login_buckets WHERE bucket_key = $1")
             .bind(&bucket_key)
             .execute(&mut *tx)
@@ -999,7 +1019,7 @@ impl AdminAuthService {
         let bucket_key = login_bucket_key(&format!("step-up:{}", admin.user.username), source_ip);
         self.check_login_bucket(&bucket_key, now).await?;
         let row = sqlx::query(
-            "SELECT u.status, p.password_hash, p.key_id,
+            "SELECT u.status, p.password_hash, p.key_id, p.credential_epoch,
                     t.key_id AS totp_key_id, t.nonce, t.ciphertext, t.last_used_step
              FROM admin_users u
              JOIN admin_password_credentials p ON p.user_id = u.id
@@ -1015,6 +1035,9 @@ impl AdminAuthService {
         let password_key_id: String = row.try_get("key_id").map_err(|_| ApiError::Database)?;
         let password_hash: String = row
             .try_get("password_hash")
+            .map_err(|_| ApiError::Database)?;
+        let credential_epoch: i64 = row
+            .try_get("credential_epoch")
             .map_err(|_| ApiError::Database)?;
         let eligible = status == "active";
         let (selected_hash, selected_key_id) = if eligible {
@@ -1083,22 +1106,36 @@ impl AdminAuthService {
             .map_err(|_| ApiError::Database)?;
         let credential_updated = sqlx::query(
             "UPDATE admin_totp_credentials SET last_used_step = $2
-             WHERE user_id = $1 AND (last_used_step IS NULL OR last_used_step < $2)",
+             WHERE user_id = $1 AND (last_used_step IS NULL OR last_used_step < $2)
+               AND EXISTS (
+                 SELECT 1
+                 FROM admin_password_credentials p
+                 JOIN admin_users u ON u.id = p.user_id
+                 WHERE p.user_id = $1 AND p.credential_epoch = $3
+                   AND u.status = 'active'
+               )",
         )
         .bind(&admin.user.id)
         .bind(step)
+        .bind(credential_epoch)
         .execute(&mut *tx)
         .await
         .map_err(|_| ApiError::Database)?
         .rows_affected();
         let session_updated = sqlx::query(
             "UPDATE admin_sessions SET elevated_until = $3, last_seen_at = $2
-             WHERE id = $1 AND user_id = $4 AND revoked_at IS NULL AND expires_at > $2",
+             WHERE id = $1 AND user_id = $4 AND credential_epoch = $5
+               AND revoked_at IS NULL AND expires_at > $2
+               AND EXISTS (
+                 SELECT 1 FROM admin_password_credentials p
+                 WHERE p.user_id = $4 AND p.credential_epoch = $5
+               )",
         )
         .bind(&admin.session_id)
         .bind(now)
         .bind(elevated_until)
         .bind(&admin.user.id)
+        .bind(credential_epoch)
         .execute(&mut *tx)
         .await
         .map_err(|_| ApiError::Database)?
@@ -1251,7 +1288,9 @@ impl AdminAuthService {
         }
         let updated = sqlx::query(
             "UPDATE admin_password_credentials
-             SET password_hash = $2, key_id = $3, changed_at = $4 WHERE user_id = $1",
+             SET password_hash = $2, key_id = $3, changed_at = $4,
+                 credential_epoch = credential_epoch + 1
+             WHERE user_id = $1",
         )
         .bind(user_id)
         .bind(password_hash)
@@ -1306,7 +1345,7 @@ impl AdminAuthService {
         let now = self.trusted_now().await?;
         self.check_login_bucket(&bucket_key, now).await?;
         let row = sqlx::query(
-            "SELECT u.id, u.status, p.password_hash, p.key_id
+            "SELECT u.id, u.status, p.password_hash, p.key_id, p.credential_epoch
              FROM admin_users u
              JOIN admin_password_credentials p ON p.user_id = u.id
              WHERE u.username = $1",
@@ -1350,6 +1389,9 @@ impl AdminAuthService {
         }
         let row = row.expect("eligible recovery administrator exists");
         let user_id: String = row.try_get("id").map_err(|_| ApiError::Database)?;
+        let credential_epoch: i64 = row
+            .try_get("credential_epoch")
+            .map_err(|_| ApiError::Database)?;
         let code_hash = sha256_hex(&recovery_code.trim().to_ascii_uppercase());
         let token = recovery_enrollment_token(&self.keyring, &user_id, &code_hash)?;
         let token_hash = sha256_hex(&token);
@@ -1361,11 +1403,16 @@ impl AdminAuthService {
             .map_err(|_| ApiError::Database)?;
         let consumed = sqlx::query(
             "UPDATE admin_recovery_codes SET consumed_at = $3
-             WHERE user_id = $1 AND code_hash = $2 AND consumed_at IS NULL",
+             WHERE user_id = $1 AND code_hash = $2 AND consumed_at IS NULL
+               AND EXISTS (
+                 SELECT 1 FROM admin_password_credentials p
+                 WHERE p.user_id = $1 AND p.credential_epoch = $4
+               )",
         )
         .bind(&user_id)
         .bind(code_hash)
         .bind(now)
+        .bind(credential_epoch)
         .execute(&mut *tx)
         .await
         .map_err(|_| ApiError::Database)?
@@ -1477,7 +1524,9 @@ impl AdminAuthService {
                     s.expires_at, u.username, u.display_name, u.status, u.row_version
              FROM admin_sessions s
              JOIN admin_users u ON u.id = s.user_id
-             WHERE s.token_hash = $1 AND s.revoked_at IS NULL",
+             JOIN admin_password_credentials p ON p.user_id = s.user_id
+             WHERE s.token_hash = $1 AND s.revoked_at IS NULL
+               AND s.credential_epoch = p.credential_epoch",
         )
         .bind(&token_hash)
         .fetch_optional(&self.repository.pool)
@@ -1763,6 +1812,7 @@ pub(crate) async fn insert_enrollment_token(
 async fn create_session(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &str,
+    credential_epoch: i64,
     source_ip: Option<&str>,
     user_agent: Option<&str>,
     now: i64,
@@ -1771,11 +1821,14 @@ async fn create_session(
     let session_token = random_secret(32);
     let csrf_token = random_secret(32);
     let expires_at = now.saturating_add(SESSION_ABSOLUTE_SECONDS);
-    sqlx::query(
+    let inserted = sqlx::query(
         "INSERT INTO admin_sessions
          (id, user_id, token_hash, csrf_hash, source_ip, user_agent_hash,
-          auth_time, elevated_until, last_seen_at, expires_at, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $7, $9, $7)",
+          auth_time, elevated_until, last_seen_at, expires_at, created_at, credential_epoch)
+         SELECT $1, $2, $3, $4, $5, $6, $7, $8, $7, $9, $7, p.credential_epoch
+         FROM admin_password_credentials p
+         JOIN admin_users u ON u.id = p.user_id
+         WHERE p.user_id = $2 AND p.credential_epoch = $10 AND u.status = 'active'",
     )
     .bind(&session_id)
     .bind(user_id)
@@ -1786,9 +1839,14 @@ async fn create_session(
     .bind(now)
     .bind(now.saturating_add(STEP_UP_SECONDS))
     .bind(expires_at)
+    .bind(credential_epoch)
     .execute(&mut **tx)
     .await
-    .map_err(|_| ApiError::Database)?;
+    .map_err(|_| ApiError::Database)?
+    .rows_affected();
+    if inserted != 1 {
+        return Err(AdminAuthError::InvalidCredentials);
+    }
     Ok(SessionCredentials {
         session_id,
         session_token,
@@ -2513,7 +2571,7 @@ mod tests {
         assert_eq!(changed.row_version, replay.row_version);
 
         let row = sqlx::query(
-            "SELECT p.password_hash, p.key_id,
+            "SELECT p.password_hash, p.key_id, p.credential_epoch,
                     EXISTS (
                         SELECT 1 FROM admin_sessions s
                         WHERE s.user_id = p.user_id AND s.revoked_at IS NULL
@@ -2536,7 +2594,35 @@ mod tests {
                 .await
                 .unwrap()
         );
+        assert_eq!(row.try_get::<i64, _>("credential_epoch").unwrap(), 2);
         assert!(!row.try_get::<bool, _>("has_active_session").unwrap());
+
+        // Model a login that verified the previous password epoch before the password
+        // change committed. Its final session insert must fail closed after the epoch advances.
+        let mut stale_login = repository.pool.begin().await.unwrap();
+        assert!(matches!(
+            create_session(
+                &mut stale_login,
+                &user_id,
+                1,
+                Some("127.0.0.1"),
+                Some("stale-login-test"),
+                now,
+            )
+            .await,
+            Err(AdminAuthError::InvalidCredentials)
+        ));
+        stale_login.rollback().await.unwrap();
+        let active_sessions: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM admin_sessions
+             WHERE user_id = $1 AND revoked_at IS NULL",
+        )
+        .bind(&user_id)
+        .fetch_one(&repository.pool)
+        .await
+        .unwrap();
+        assert_eq!(active_sessions, 0);
+
         let audits: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM audit_events
              WHERE event_type = 'admin_password_changed' AND operation_id = $1",
