@@ -28,6 +28,24 @@ assert_eq() {
   [[ "$1" == "$2" ]] || fail "expected <$2>, got <$1>"
 }
 
+assert_eq "$(release_pr_pending_mode false)" required
+assert_eq "$(release_pr_pending_mode true)" optional
+if release_pr_pending_mode invalid >/dev/null 2>&1; then
+  fail "invalid managed Release completion state selected a pending-label mode"
+fi
+pending_pr_json='{"labels":[{"name":"release:pending"}]}'
+completed_pr_json='{"labels":[]}'
+validate_release_pr_pending_state "$pending_pr_json" 17 required
+validate_release_pr_pending_state "$pending_pr_json" 17 optional
+validate_release_pr_pending_state "$completed_pr_json" 17 optional
+if validate_release_pr_pending_state "$completed_pr_json" 17 required >/dev/null 2>&1; then
+  fail "incomplete publication accepted a Release PR without the pending label"
+fi
+if validate_release_pr_pending_state "$pending_pr_json" 17 invalid >/dev/null 2>&1; then
+  fail "invalid Release PR pending-label mode was accepted"
+fi
+unset pending_pr_json completed_pr_json
+
 release_workflow="$(dirname "$0")/../.github/workflows/release-manager.yml"
 grep -Fq 'VALIDATION_RUN_ID: ${{ inputs.validation-run-id' "$release_workflow" ||
   fail "release workflow does not forward the validation run"
@@ -1188,6 +1206,7 @@ gh() {
 }
 validate_release_pr() {
   [[ "$1" == 17 && "$2" == merged ]] || fail "publish validation used the wrong Release PR"
+  [[ "${5:-}" == required ]] || fail "incomplete publication did not require the pending label"
   VALIDATED_PR_NUMBER=17
   VALIDATED_RELEASE_SHA=release-sha
   VALIDATED_RELEASE_VERSION=1.2.3

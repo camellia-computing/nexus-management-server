@@ -204,6 +204,12 @@ permission. Every checkout disables persisted credentials.
 Prefer rerunning the failed job. Do not create replacement tags, Releases, or
 aliases manually.
 
+An incomplete publication must retain `release:pending`. Once the immutable
+`release-complete:<SHA>` marker has been validated, recovery accepts the
+authorizing Release PR immediately before or after that label is removed; the
+exact PR identity, reviewed head, approval, merge topology, tag and completion
+marker are still revalidated.
+
 To recover an existing managed tag, run the `Release` workflow from `main` with
 the original `vX.Y.Z` tag. The `main` workflow is only the trusted control
 plane; the original tag commit remains the source and authorization subject.
