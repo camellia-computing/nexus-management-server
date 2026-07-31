@@ -4,7 +4,7 @@
 
 Camellia Nexus Management Server 是 Camellia Nexus 桌面客户端的生产授权服务。服务端是账号、授权、设备、刷新会话、授权码、挑战、审计事件和 entitlement 签发状态的权威中心。客户端只保存设备本地密钥、刷新会话和短期 entitlement 租约。
 
-客户端与服务端的联合生产就绪审查见 [`nexus` 仓库审计文档](https://github.com/camellia-computing/nexus/blob/main/docs/production-readiness-audit.md)。
+客户端与服务端的联合生产就绪结论由两仓库各自的审计文档和精确版本发布证据共同维护。
 
 ### 生产模型
 
@@ -60,13 +60,10 @@ CAMELLIA_NEXUS_CLEANUP_BATCH_SIZE=1000
 
 服务端以根 `Cargo.toml` 为唯一版本真源，并与客户端独立演进。`main` 门禁通过后，`Release Manager` 自动提出版本与变更日志；只有最终 head 获得人工批准且按规定 squash 合并后，才会在复核仓库策略与不可变 Release 设置后创建 tag 和 draft Release，镜像以 digest 校验和签名后发布。手动运行只验证按提交 SHA 标识的候选镜像，不推送。
 
-镜像名称：
+镜像位置由组织审核后的 `CONTAINER_REGISTRY_MAP` 决定。GHCR 和 Docker Hub
+分别按配置发布；未配置的目标会明确跳过，不允许由凭据或手工输入隐式启用。
 
-```text
-ghcr.io/<owner>/nexus-management-server
-```
-
-服务端与客户端分别维护独立的版本序列。服务端只发布规范的稳定语义化版本，并在不可变 digest、签名和公开 Release 验证后更新 `latest`；发布 tag 和带版本号的镜像 tag 不得覆盖。该仓库只使用绑定 OCI digest 的无密钥 Cosign/OIDC 身份，不保存桌面或移动端证书/密钥。完整流程见 [发布规范](docs/releasing.md)，跨仓库控制遵循组织级 [CI/CD 基线](https://github.com/camellia-computing/.github/blob/main/docs/CI_CD_BASELINE.md)。
+服务端与客户端分别维护独立的版本序列。服务端只发布规范的稳定语义化版本；发布前绑定最高的已完成兼容客户端正式版，审批前冻结并扫描 OCI 字节，审批后仅把同一 digest 复制到已配置的注册表。完成不可变 Release、证据与公开回读后，`latest` 才指向最高已完成稳定版；发布 tag 和版本镜像 tag 不得覆盖。该仓库只使用绑定 OCI digest 的无密钥 Cosign/OIDC 身份，不保存桌面或移动端证书/密钥。完整流程见 [发布规范](docs/releasing.md)。
 
 容器部署要点：
 
@@ -547,13 +544,12 @@ post-migration grants.
 
 The server uses the root `Cargo.toml` as its sole version source and advances independently from the client. After `main` passes its gates, `Release Manager` proposes the version and changelog. Only an exact-head human-approved Release PR merged with the required squash policy can create the tag and draft Release after repository policy and immutable-Release checks; the image is verified and signed by digest before publication. Manual runs validate a candidate identified by commit SHA without pushing it.
 
-Image name:
+Image locations come exclusively from the reviewed `CONTAINER_REGISTRY_MAP`.
+GHCR and Docker Hub are published independently when configured; an absent
+target is explicitly skipped and cannot be inferred from credentials or a
+manual input.
 
-```text
-ghcr.io/<owner>/nexus-management-server
-```
-
-Server and client versions advance independently. The server publishes canonical stable Semantic Versions only and updates `latest` after the immutable digest, signature and public Release verify. Release tags and versioned image tags must never be replaced. This repository uses only the keyless Cosign/OIDC identity bound to its OCI digest and does not store desktop or mobile signing credentials. See the [release policy](docs/releasing.md) and organization [CI/CD baseline](https://github.com/camellia-computing/.github/blob/main/docs/CI_CD_BASELINE.md) for the complete procedure.
+Server and client versions advance independently. Before approval, the server binds the highest completed compatible client release and freezes and scans one OCI layout. After approval, only that digest is copied to configured registries. `latest` is reconciled to the highest completed stable release only after immutable Release evidence and public readback succeed. Release tags and versioned image tags must never be replaced. This repository uses only the keyless Cosign/OIDC identity bound to its OCI digest and does not store desktop or mobile signing credentials. See the [release policy](docs/releasing.md) for the complete procedure.
 
 Container deployment notes:
 

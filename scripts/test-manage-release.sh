@@ -63,14 +63,17 @@ grep -Fq -- '-F draft=true' "$(dirname "$0")/manage-release.sh" || fail "Release
 grep -Fq 'gh pr ready' "$(dirname "$0")/manage-release.sh" || fail "Release PR is never opened for review"
 
 publish_workflow="$(dirname "$0")/../.github/workflows/publish-release.yml"
-[[ "$(grep -Fc 'for tag in "$VERSION" "sha-$RELEASE_SHA"; do' "$publish_workflow")" == 3 ]] ||
-  fail "formal image aliases do not consistently use version and full release SHA"
-if grep -Fq 'sha-${GITHUB_SHA::12}' "$publish_workflow" ||
-   grep -Fq 'for tag in "v$VERSION"' "$publish_workflow"; then
-  fail "publication still contains a non-canonical immutable image alias"
+grep -Fq 'CONTAINER_REGISTRY_MAP: ${{ vars.CONTAINER_REGISTRY_MAP }}' "$publish_workflow" ||
+  fail "publication does not consume the reviewed container registry map"
+grep -Fq 'outputs: type=oci,dest=${{ runner.temp }}/release-image.oci.tar' "$publish_workflow" ||
+  fail "publication does not freeze an OCI layout before approval"
+grep -Fq 'environment: release' "$publish_workflow" ||
+  fail "publication has no protected release environment"
+if grep -Fq 'publish_ghcr:' "$publish_workflow" ||
+   grep -Fq 'publish_dockerhub:' "$publish_workflow"; then
+  fail "registry selection can be overridden by dispatch input"
 fi
-grep -Fq '"$IMAGE:latest"' "$publish_workflow" || fail "publication does not maintain the latest image alias"
-[[ "$(grep -Fc 'RELEASE_APP_SLUG: ${{ steps.policy-token.outputs.app-slug }}' "$publish_workflow")" == 4 ]] ||
+[[ "$(grep -Fc 'RELEASE_APP_SLUG: ${{ steps.policy-token.outputs.app-slug }}' "$publish_workflow")" == 5 ]] ||
   fail "publication boundaries do not all receive the installation App slug"
 [[ "$(grep -Fc 'permission-metadata: read' "$publish_workflow")" == 2 ]] ||
   fail "publication policy tokens do not use the documented Metadata-read scope"
@@ -92,14 +95,20 @@ grep -Fq 'RELEASE_SHA: ${{ needs.metadata.outputs.sha }}' "$publish_workflow" ||
 if grep -Fq '/releases/tags/' "$(dirname "$0")/manage-release.sh"; then
   fail "managed draft lookup still uses the published-only tag endpoint"
 fi
+grep -Fq 'RECORDED_DIGEST: ${{ steps.reauthorize.outputs.release-digest }}' "$publish_workflow" ||
+  fail "published image recovery is not bound to Release metadata"
 unset publish_workflow
 
-publish_workflow="$(dirname "$0")/../.github/workflows/publish-release.yml"
-grep -Fq 'RECORDED_DIGEST: ${{ steps.registry-release.outputs.release-digest }}' "$publish_workflow" ||
-  fail "published image recovery is not bound to Release metadata"
-grep -Fq 'Published Release has no recorded container digest' "$publish_workflow" ||
+publish_script="$(dirname "$0")/publish_image_release.sh"
+[[ "$(grep -Fc 'for alias in "$VERSION" "sha-$RELEASE_SHA"; do' "$publish_script")" == 2 ]] ||
+  fail "formal image aliases do not consistently use version and full release SHA"
+grep -Fq 'Draft release cannot contain a recorded container digest' "$publish_script" ||
   fail "published image recovery can rebuild without a recorded digest"
-unset publish_workflow
+if grep -Fq 'sha-${GITHUB_SHA::12}' "$publish_script" ||
+   grep -Fq 'for alias in "v$VERSION"' "$publish_script"; then
+  fail "publication contains a non-canonical immutable image alias"
+fi
+unset publish_script
 
 merge_workflow="$(dirname "$0")/../.github/workflows/merge.yml"
 grep -Fq 'pull_request_review:' "$merge_workflow" || fail "merge workflow does not react to approval"
@@ -1182,10 +1191,13 @@ validate_release_pr() {
   VALIDATED_PR_NUMBER=17
   VALIDATED_RELEASE_SHA=release-sha
   VALIDATED_RELEASE_VERSION=1.2.3
+  RELEASE_VALIDATION_RUN_ID=4242
 }
 validate_publish_release 1.2.3
 grep -Fxq 'release-id=42' "$GITHUB_OUTPUT" || fail "publish validation did not expose the Release identity"
 grep -Fxq 'release-draft=true' "$GITHUB_OUTPUT" || fail "publish validation did not expose the draft state"
+grep -Fxq 'validation-run-id=4242' "$GITHUB_OUTPUT" ||
+  fail "publish validation did not expose the exact CI run"
 RELEASE_APP_SLUG=other-release-bot
 if validate_publish_release 1.2.3 >/dev/null 2>&1; then
   fail "publish validation accepted a mismatched App identity"
@@ -1266,6 +1278,51 @@ mark_publish_complete 1.2.3
 assert_eq "$completion_label_removed" true
 [[ "$(jq -r .body "$completion_state" | grep -Fxc "<!-- release-complete:$completion_sha -->" || true)" == 1 ]] ||
   fail "Publication completion proof was not recorded exactly once"
+
+latest_selected=
+gh() {
+  if [[ "$*" == "api repos/test/repository/releases/42" ]]; then
+    cat "$completion_state"
+  elif [[ "$1" == api && "$2" == --paginate && "$3" == --slurp &&
+          "$4" == 'repos/test/repository/releases?per_page=100' ]]; then
+    jq -nc --arg current "$completion_sha" --arg current_digest "$container_digest" '
+      [[
+        {
+          draft:false, immutable:true, tag_name:"v1.2.3",
+          target_commitish:$current,
+          body:(
+            "<!-- release-complete:" + $current + " -->\n" +
+            "<!-- container-digest:" + $current_digest + " -->"
+          )
+        },
+        {
+          draft:false, immutable:true, tag_name:"v1.10.0",
+          target_commitish:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          body:(
+            "<!-- release-complete:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb -->\n" +
+            "<!-- container-digest:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc -->"
+          )
+        },
+        {
+          draft:false, immutable:true, tag_name:"v2.0.0",
+          target_commitish:"dddddddddddddddddddddddddddddddddddddddd",
+          body:"publication is incomplete"
+        }
+      ]]'
+  elif [[ "$*" == "release edit v1.10.0 --repo test/repository --latest" ]]; then
+    latest_selected=v1.10.0
+  elif [[ "$*" == "api repos/test/repository/releases/latest --jq .tag_name // empty" ]]; then
+    printf '%s\n' "$latest_selected"
+  else
+    fail "unexpected latest-reconciliation gh call: $*"
+  fi
+}
+reconcile_latest_release 1.2.3
+assert_eq "$latest_selected" v1.10.0
+grep -Fxq 'latest-digest=sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc' "$GITHUB_OUTPUT" ||
+  fail "latest reconciliation did not expose the selected image digest"
+grep -Fxq 'owns-latest=false' "$GITHUB_OUTPUT" ||
+  fail "older release incorrectly claimed latest ownership"
 rm -f "$GITHUB_OUTPUT"
 
 echo "Release manager state tests passed"
