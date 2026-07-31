@@ -164,6 +164,9 @@ The immutable GitHub Release contains:
 - `SHA256SUMS`;
 - one Sigstore bundle for every evidence asset.
 
+Trivy scans the extracted, digest-checked OCI layout. The original OCI archive
+remains unchanged as the frozen input later copied to each configured registry.
+
 Before the draft becomes public, the workflow uploads and downloads the exact
 asset multiset, verifies checksums, evidence schema, blob signatures, GitHub
 attestations, OCI labels, executable version, service runtime, registry

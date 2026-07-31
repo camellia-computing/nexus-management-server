@@ -85,6 +85,11 @@ grep -Fq 'CONTAINER_REGISTRY_MAP: ${{ vars.CONTAINER_REGISTRY_MAP }}' "$publish_
   fail "publication does not consume the reviewed container registry map"
 grep -Fq 'outputs: type=oci,dest=${{ runner.temp }}/release-image.oci.tar' "$publish_workflow" ||
   fail "publication does not freeze an OCI layout before approval"
+grep -Fq 'input: ${{ runner.temp }}/release-image-layout' "$publish_workflow" ||
+  fail "publication vulnerability scan does not consume the extracted OCI layout"
+if grep -Fq 'input: ${{ runner.temp }}/release-image.oci.tar' "$publish_workflow"; then
+  fail "publication passes an OCI archive to Trivy as a Docker archive"
+fi
 grep -Fq 'environment: release' "$publish_workflow" ||
   fail "publication has no protected release environment"
 if grep -Fq 'publish_ghcr:' "$publish_workflow" ||
