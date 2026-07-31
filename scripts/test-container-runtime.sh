@@ -4,7 +4,7 @@ umask 077
 
 image="${1:-}"
 if [[ -z "$image" ]]; then
-  echo "Usage: $0 <locally-loaded-image>" >&2
+  echo "Usage: $0 <locally-loaded-image> [release-source-root]" >&2
   exit 2
 fi
 
@@ -15,7 +15,16 @@ for command in curl docker jq python3 tar; do
   }
 done
 
-repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source_root="${2:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)}"
+repository_root="$(cd -- "$source_root" && pwd -P)"
+for helper in generate-entitlement-key.sh generate-keyring.sh; do
+  [[ -f "$repository_root/scripts/$helper" &&
+    ! -L "$repository_root/scripts/$helper" &&
+    -x "$repository_root/scripts/$helper" ]] || {
+    echo "Release source root is missing trusted runtime helper scripts" >&2
+    exit 2
+  }
+done
 temporary_directory="$(mktemp -d)"
 suffix="${GITHUB_RUN_ID:-local}-$$"
 network="camellia-runtime-$suffix"

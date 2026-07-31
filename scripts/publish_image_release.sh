@@ -6,6 +6,7 @@ set -euo pipefail
 : "${RELEASE_POLICY_TOKEN:?RELEASE_POLICY_TOKEN is required}"
 : "${RELEASE_SHA:?RELEASE_SHA is required}"
 : "${RELEASE_SIGNING_IDENTITY:?RELEASE_SIGNING_IDENTITY is required}"
+: "${RELEASE_SOURCE_ROOT:?RELEASE_SOURCE_ROOT is required}"
 : "${RELEASE_TAG:?RELEASE_TAG is required}"
 : "${VERSION:?VERSION is required}"
 : "${RELEASE_ID:?RELEASE_ID is required}"
@@ -20,6 +21,7 @@ ghcr_image="${GHCR_IMAGE:-}"
 dockerhub_image="${DOCKERHUB_IMAGE:-}"
 primary_image="${PRIMARY_IMAGE:-}"
 script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+release_source_root="$(cd -- "$RELEASE_SOURCE_ROOT" && pwd -P)"
 tag="v$VERSION"
 issuer="https://token.actions.githubusercontent.com"
 tag_identity="https://github.com/$GITHUB_REPOSITORY/.github/workflows/publish-release.yml@refs/tags/$tag"
@@ -31,6 +33,18 @@ trap 'rm -rf "$work_directory"' EXIT
   { echo "VERSION must be stable SemVer" >&2; exit 1; }
 [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] ||
   { echo "RELEASE_SHA must be a full lowercase commit" >&2; exit 1; }
+[[ "$(git -C "$release_source_root" rev-parse --verify HEAD)" == "$RELEASE_SHA" ]] || {
+  echo "Release source root is not checked out at the authorized commit" >&2
+  exit 1
+}
+for helper in generate-entitlement-key.sh generate-keyring.sh; do
+  [[ -f "$release_source_root/scripts/$helper" &&
+    ! -L "$release_source_root/scripts/$helper" &&
+    -x "$release_source_root/scripts/$helper" ]] || {
+    echo "Release source root is missing trusted runtime helper scripts" >&2
+    exit 1
+  }
+done
 [[ "$RELEASE_TAG" == "$tag" ]] ||
   { echo "Release tag does not match v$VERSION" >&2; exit 1; }
 [[ "$RELEASE_SIGNING_IDENTITY" == "$tag_identity" ||
@@ -443,7 +457,8 @@ actual_label_source="$(
     "$primary_image@$digest"
 )"
 [[ "$actual_label_source" == "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" ]]
-bash "$script_directory/test-container-runtime.sh" "$primary_image@$digest"
+bash "$script_directory/test-container-runtime.sh" \
+  "$primary_image@$digest" "$release_source_root"
 
 python3 "$script_directory/build_image_release_evidence.py" finalize \
   --frozen "$assets_directory/frozen-release-evidence.json" \

@@ -512,6 +512,7 @@ jobs:
           RELEASE_PR_NUMBER: ${{ steps.reauthorize.outputs.release-pr-number }}
           RELEASE_SHA: ${{ needs.metadata.outputs.sha }}
           RELEASE_SIGNING_IDENTITY: ${{ needs.metadata.outputs.signing-identity }}
+          RELEASE_SOURCE_ROOT: ${{ github.workspace }}
           RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
           VERIFY_PUBLISHED_ONLY: ${{ needs.authorize.outputs.release-draft == 'false' }}
           VERSION: ${{ needs.metadata.outputs.version }}

@@ -120,6 +120,8 @@ if grep -Fq '/releases/tags/' "$(dirname "$0")/manage-release.sh"; then
 fi
 grep -Fq 'RECORDED_DIGEST: ${{ steps.reauthorize.outputs.release-digest }}' "$publish_workflow" ||
   fail "published image recovery is not bound to Release metadata"
+grep -Fq 'RELEASE_SOURCE_ROOT: ${{ github.workspace }}' "$publish_workflow" ||
+  fail "relocated publication control is not bound to the exact tag checkout"
 unset publish_workflow
 
 publish_script="$(dirname "$0")/publish_image_release.sh"
@@ -127,11 +129,22 @@ publish_script="$(dirname "$0")/publish_image_release.sh"
   fail "formal image aliases do not consistently use version and full release SHA"
 grep -Fq 'Draft release cannot contain a recorded container digest' "$publish_script" ||
   fail "published image recovery can rebuild without a recorded digest"
+grep -Fq 'git -C "$release_source_root" rev-parse --verify HEAD' "$publish_script" ||
+  fail "runtime helpers are not bound to the authorized release checkout"
+grep -Fq '"$primary_image@$digest" "$release_source_root"' "$publish_script" ||
+  fail "relocated runtime verification does not receive the release source root"
 if grep -Fq 'sha-${GITHUB_SHA::12}' "$publish_script" ||
    grep -Fq 'for alias in "v$VERSION"' "$publish_script"; then
   fail "publication contains a non-canonical immutable image alias"
 fi
 unset publish_script
+
+runtime_script="$(dirname "$0")/test-container-runtime.sh"
+grep -Fq 'source_root="${2:-' "$runtime_script" ||
+  fail "runtime verification cannot resolve an explicit release source root"
+grep -Fq 'repository_root="$(cd -- "$source_root" && pwd -P)"' "$runtime_script" ||
+  fail "runtime verification does not canonicalize the explicit release source root"
+unset runtime_script
 
 merge_workflow="$(dirname "$0")/../.github/workflows/merge.yml"
 grep -Fq 'pull_request_review:' "$merge_workflow" || fail "merge workflow does not react to approval"
