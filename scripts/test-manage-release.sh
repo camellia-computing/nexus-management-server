@@ -144,6 +144,23 @@ grep -Fq 'source_root="${2:-' "$runtime_script" ||
   fail "runtime verification cannot resolve an explicit release source root"
 grep -Fq 'repository_root="$(cd -- "$source_root" && pwd -P)"' "$runtime_script" ||
   fail "runtime verification does not canonicalize the explicit release source root"
+# shellcheck disable=SC2317 # Exported into the relocated child Bash process.
+docker() {
+  echo "synthetic unavailable image boundary" >&2
+  return 42
+}
+export -f docker
+set +e
+runtime_output="$(
+  bash <(sed -n '1,$p' "$runtime_script") \
+    synthetic-unavailable-image "$(dirname "$0")/.." 2>&1
+)"
+runtime_status=$?
+set -e
+unset -f docker
+[[ "$runtime_status" == 42 && "$runtime_output" == "synthetic unavailable image boundary" ]] ||
+  fail "relocated runtime verification did not use its explicit release source root"
+unset runtime_output runtime_status
 unset runtime_script
 
 merge_workflow="$(dirname "$0")/../.github/workflows/merge.yml"
