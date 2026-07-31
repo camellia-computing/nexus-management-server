@@ -73,8 +73,7 @@ jobs:
             echo "Committed server version is not canonical stable SemVer: $version" >&2
             exit 1
           }
-          owner="$(tr '[:upper:]' '[:lower:]' <<< "$GITHUB_REPOSITORY_OWNER")"
-          image="ghcr.io/$owner/nexus-management-server"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
           build_id="$version"
           release_path=none
           release_pr_number=
@@ -474,7 +473,7 @@ jobs:
           retention-days: 7
 
   gate:
-    name: Gate
+    name: Required
     if: ${{ always() && !cancelled() && needs.metadata.result != 'skipped' }}
     needs: [metadata, release-check, quality, container, native-e2e]
     runs-on: ubuntu-24.04
@@ -497,7 +496,7 @@ jobs:
 
           failures=0
           {
-            echo '## Gate results'
+            echo '## Required check results'
             echo
             echo '| Job | Result | Expected |'
             echo '| --- | --- | --- |'
@@ -511,7 +510,7 @@ jobs:
             printf "| \`%s\` | \`%s\` | \`%s\` |\n" \
               "$job" "$actual" "$expected" >> "$GITHUB_STEP_SUMMARY"
             if [[ "$actual" != "$expected" ]]; then
-              printf '::error title=Gate rejected::%s returned %s; expected %s\n' \
+              printf '::error title=Required check rejected::%s returned %s; expected %s\n' \
                 "$job" "$actual" "$expected"
               failures=$((failures + 1))
             fi
@@ -540,14 +539,14 @@ jobs:
               *)
                 printf "| \`Release path\` | \`%s\` | \`none\`, \`open\`, or \`merged\` |\n" \
                   "$RELEASE_PATH" >> "$GITHUB_STEP_SUMMARY"
-                printf '::error title=Gate rejected::Invalid release path: %s\n' "$RELEASE_PATH"
+                printf '::error title=Required check rejected::Invalid release path: %s\n' "$RELEASE_PATH"
                 failures=$((failures + 1))
                 ;;
             esac
           fi
 
           if ((failures > 0)); then
-            printf 'Gate rejected %d unexpected result(s).\n' "$failures" >&2
+            printf 'Required check rejected %d unexpected result(s).\n' "$failures" >&2
             exit 1
           fi
 
