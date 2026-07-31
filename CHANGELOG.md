@@ -3,6 +3,27 @@
 All notable changes to the Camellia Nexus Management Server will be recorded
 here from the first commercial release onward.
 
+## [1.0.0] - 2026-07-31
+
+### Added
+
+- establish Camellia Nexus management production baseline
+
+- harden Nexus management for production (#5)
+
+- freeze and verify service publication (#8)
+
+
+### Changed
+
+- randomize dummy credentials
+
+
+### Fixed
+
+- refresh pinned ClamAV LTS images (#7)
+
+
 ## [Unreleased]
 
 - Establish the clean 0.1.0 pre-release service baseline.
