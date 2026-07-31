@@ -486,7 +486,7 @@ jobs:
           retention-days: 7
 
   gate:
-    name: Required
+    name: CI / Required
     if: ${{ always() && !cancelled() && needs.metadata.result != 'skipped' }}
     needs: [metadata, release-check, quality, container, native-e2e]
     runs-on: ubuntu-24.04
