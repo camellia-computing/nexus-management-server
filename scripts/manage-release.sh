@@ -864,9 +864,39 @@ validate_open_release_pr_envelope() {
   }
 }
 
+release_pr_pending_mode() {
+  case "${1:-false}" in
+    false) echo required ;;
+    true) echo optional ;;
+    *)
+      echo "Invalid managed Release completion state: ${1:-}" >&2
+      return 1
+      ;;
+  esac
+}
+
+validate_release_pr_pending_state() {
+  local pr_json="$1" number="$2" pending_mode="${3:-required}"
+
+  case "$pending_mode" in
+    required)
+      has_label "$pr_json" "$pending_label" || {
+        echo "Release PR #$number is not pending" >&2
+        return 1
+      }
+      ;;
+    optional)
+      ;;
+    *)
+      echo "Invalid Release PR pending-label mode: $pending_mode" >&2
+      return 1
+      ;;
+  esac
+}
+
 validate_release_pr() {
   local number="$1" expected_state="$2" allow_current_validation="${3:-false}"
-  local verify_generated_delta="${4:-true}"
+  local verify_generated_delta="${4:-true}" pending_mode="${5:-required}"
   local pr_json author title state merged base head head_repo sha body merge_subject merge_body
   local version minimum locked files existing_tag_sha parent_line parent_sha reviewed_sha
 
@@ -889,7 +919,7 @@ validate_release_pr() {
     echo "Release PR #$number has an invalid source" >&2
     return 1
   }
-  has_label "$pr_json" "$pending_label" || { echo "Release PR #$number is not pending" >&2; return 1; }
+  validate_release_pr_pending_state "$pr_json" "$number" "$pending_mode" || return 1
   parse_release_provenance "$body" || return 1
   validate_validation_run "$RELEASE_BASE_SHA" "$RELEASE_VALIDATION_RUN_ID" "$allow_current_validation" || return 1
   validate_release_proposal_commit "$reviewed_sha" "$title" "$RELEASE_BASE_SHA" || return 1
@@ -1155,6 +1185,7 @@ managed_release() {
 
 validate_publish_release() {
   local version="$1" tag release_json release_pr_number release_id release_draft tag_sha checkout_sha committed_version
+  local pending_mode
 
   : "${RELEASE_SHA:?RELEASE_SHA is required}"
   : "${RELEASE_TAG:?RELEASE_TAG is required}"
@@ -1191,7 +1222,8 @@ validate_publish_release() {
   release_draft="$MANAGED_RELEASE_DRAFT"
   release_pr_number="$MANAGED_RELEASE_PR_NUMBER"
 
-  validate_release_pr "$release_pr_number" merged false false || return 1
+  pending_mode="$(release_pr_pending_mode "$MANAGED_RELEASE_COMPLETE")" || return 1
+  validate_release_pr "$release_pr_number" merged false false "$pending_mode" || return 1
   [[ "$VALIDATED_RELEASE_SHA" == "$RELEASE_SHA" && "$VALIDATED_RELEASE_VERSION" == "$version" ]] || {
     echo "Release PR #$release_pr_number does not authorize $tag at $RELEASE_SHA" >&2
     return 1

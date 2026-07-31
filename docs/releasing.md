@@ -164,6 +164,9 @@ The immutable GitHub Release contains:
 - `SHA256SUMS`;
 - one Sigstore bundle for every evidence asset.
 
+Trivy scans the extracted, digest-checked OCI layout. The original OCI archive
+remains unchanged as the frozen input later copied to each configured registry.
+
 Before the draft becomes public, the workflow uploads and downloads the exact
 asset multiset, verifies checksums, evidence schema, blob signatures, GitHub
 attestations, OCI labels, executable version, service runtime, registry
@@ -203,6 +206,12 @@ permission. Every checkout disables persisted credentials.
 
 Prefer rerunning the failed job. Do not create replacement tags, Releases, or
 aliases manually.
+
+An incomplete publication must retain `release:pending`. Once the immutable
+`release-complete:<SHA>` marker has been validated, recovery accepts the
+authorizing Release PR immediately before or after that label is removed; the
+exact PR identity, reviewed head, approval, merge topology, tag and completion
+marker are still revalidated.
 
 To recover an existing managed tag, run the `Release` workflow from `main` with
 the original `vX.Y.Z` tag. The `main` workflow is only the trusted control
