@@ -232,11 +232,24 @@ jobs:
           bash -n \
             scripts/build-e2e-bundle.sh \
             scripts/manage-release.sh \
+            scripts/publish_image_release.sh \
             scripts/provision-e2e-compose.sh \
+            scripts/reconcile_image_latest.sh \
+            scripts/resolve-container-registries.sh \
             scripts/test-systemd-deployment.sh \
             scripts/test-container-runtime.sh \
-            scripts/test-manage-release.sh
+            scripts/test-manage-release.sh \
+            scripts/test-resolve-container-registries.sh
+          python3 -m py_compile \
+            scripts/build_image_release_evidence.py \
+            scripts/resolve_nexus_client_release.py \
+            scripts/test_build_image_release_evidence.py \
+            scripts/test_resolve_nexus_client_release.py \
+            scripts/validate-release-evidence.py
+          python3 scripts/test_build_image_release_evidence.py -v
+          python3 scripts/test_resolve_nexus_client_release.py -v
           bash scripts/test-manage-release.sh
+          bash scripts/test-resolve-container-registries.sh
       - name: Rust gates
         run: |
           cargo fmt --all -- --check

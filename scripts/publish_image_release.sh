@@ -423,14 +423,26 @@ jq -s 'sort_by(.name)' "${registry_fragments[@]}" > "$assets_directory/registry-
 verify_registry_evidence "$assets_directory" "$digest"
 
 docker pull "$primary_image@$digest"
-[[ "$(docker run --rm "$primary_image@$digest" --version)" ==
-  "camellia-nexus-management-server $VERSION" ]]
-[[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$primary_image@$digest")" ==
-  "$VERSION" ]]
-[[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$primary_image@$digest")" ==
-  "$RELEASE_SHA" ]]
-[[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.source" }}' "$primary_image@$digest")" ==
-  "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" ]]
+actual_version="$(docker run --rm "$primary_image@$digest" --version)"
+[[ "$actual_version" == "camellia-nexus-management-server $VERSION" ]]
+actual_label_version="$(
+  docker image inspect \
+    --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' \
+    "$primary_image@$digest"
+)"
+[[ "$actual_label_version" == "$VERSION" ]]
+actual_label_revision="$(
+  docker image inspect \
+    --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+    "$primary_image@$digest"
+)"
+[[ "$actual_label_revision" == "$RELEASE_SHA" ]]
+actual_label_source="$(
+  docker image inspect \
+    --format '{{ index .Config.Labels "org.opencontainers.image.source" }}' \
+    "$primary_image@$digest"
+)"
+[[ "$actual_label_source" == "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" ]]
 bash "$script_directory/test-container-runtime.sh" "$primary_image@$digest"
 
 python3 "$script_directory/build_image_release_evidence.py" finalize \

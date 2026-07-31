@@ -827,8 +827,11 @@ validate_release_proposal_commit() {
     return 1
   }
   message="$(jq -r '.commit.message // ""' <<< "$commit_json")"
-  [[ "$message" =~ ^chore\(release\):\ v((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))$ ]] &&
-    valid_product_version "${BASH_REMATCH[1]}" || {
+  [[ "$message" =~ ^chore\(release\):\ v((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))$ ]] || {
+    echo "Release proposal commit $sha has a non-canonical message" >&2
+    return 1
+  }
+  valid_product_version "${BASH_REMATCH[1]}" || {
     echo "Release proposal commit $sha has a non-canonical message" >&2
     return 1
   }

@@ -149,9 +149,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
-      actions: read
+      actions: read # Bind authorization to the exact successful validation run.
       contents: read
-      pull-requests: read
+      pull-requests: read # Revalidate the managed Release PR and exact head.
     outputs:
       release-digest: ${{ steps.release.outputs.release-digest }}
       release-draft: ${{ steps.release.outputs.release-draft }}
@@ -204,10 +204,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
-      actions: read
-      attestations: write
+      actions: read # Read only the exact CI evidence and dependency Release assets.
+      attestations: write # Record SBOM and provenance for the frozen image digest.
       contents: read
-      id-token: write
+      id-token: write # Mint the short-lived identity used by GitHub attestations.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -254,6 +254,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .node-version
+          package-manager-cache: false
       - name: Exact client/service compatibility
         run: |
           node scripts/check-cross-repo-contract.mjs _nexus_client
@@ -272,14 +273,14 @@ jobs:
             VERSION=${{ needs.metadata.outputs.version }}
             REVISION=${{ needs.metadata.outputs.sha }}
             SOURCE=${{ github.server_url }}/${{ github.repository }}
-          cache-from: type=gha,scope=nexus-management-release
-          cache-to: type=gha,scope=nexus-management-release,mode=max
           provenance: mode=max
           sbom: true
       - name: Resolve OCI platform digest
         id: image
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          RELEASE_SHA: ${{ needs.metadata.outputs.sha }}
+          VERSION: ${{ needs.metadata.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
@@ -306,8 +307,8 @@ jobs:
           jq -n \
             --arg digest "$IMAGE_DIGEST" \
             --arg platform_digest "$platform_digest" \
-            --arg commit "${{ needs.metadata.outputs.sha }}" \
-            --arg version "${{ needs.metadata.outputs.version }}" '{
+            --arg commit "$RELEASE_SHA" \
+            --arg version "$VERSION" '{
               schema_version: 1,
               image: "nexus-management-service",
               version: $version,
@@ -361,13 +362,14 @@ jobs:
           PLATFORM_DIGEST: ${{ steps.image.outputs.platform-digest }}
           PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
           RELEASE_SHA: ${{ needs.metadata.outputs.sha }}
+          SBOM_ATTESTATION_BUNDLE: ${{ steps.sbom-attestation.outputs.bundle-path }}
           VALIDATION_RUN_ID: ${{ needs.authorize.outputs.validation-run-id }}
           VERSION: ${{ needs.metadata.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
           cp -- "$PROVENANCE_BUNDLE" release-assets/PROVENANCE.intoto.jsonl
-          cp -- "${{ steps.sbom-attestation.outputs.bundle-path }}" \
+          cp -- "$SBOM_ATTESTATION_BUNDLE" \
             release-assets/SBOM-ATTESTATION.intoto.jsonl
           PYTHONPATH="$RUNNER_TEMP" python3 "$RUNNER_TEMP/build_image_release_evidence.py" freeze \
             --version "$VERSION" \
@@ -406,12 +408,12 @@ jobs:
     environment: release
     timeout-minutes: 60
     permissions:
-      actions: read
-      attestations: read
+      actions: read # Download only the exact frozen release candidate.
+      attestations: read # Verify the frozen SBOM and provenance before publication.
       contents: read
-      id-token: write
-      packages: write
-      pull-requests: write
+      id-token: write # Mint the short-lived keyless Cosign publication identity.
+      packages: write # Publish configured GHCR aliases for the verified digest.
+      pull-requests: write # Remove the completion label only after immutable readback succeeds.
     steps:
       - name: Policy token
         id: policy-token
