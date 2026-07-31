@@ -127,6 +127,12 @@ unset publish_workflow
 publish_script="$(dirname "$0")/publish_image_release.sh"
 [[ "$(grep -Fc 'for alias in "$VERSION" "sha-$RELEASE_SHA"; do' "$publish_script")" == 2 ]] ||
   fail "formal image aliases do not consistently use version and full release SHA"
+grep -Fq 'reconcile_draft_alias() {' "$publish_script" ||
+  fail "draft registry aliases have no bounded recovery path"
+grep -Fq 'Draft Release is already committed to a different container digest' "$publish_script" ||
+  fail "draft registry recovery can cross the container digest commit point"
+grep -Fq 'Reconciling uncommitted draft alias' "$publish_script" ||
+  fail "draft registry recovery does not distinguish uncommitted aliases"
 grep -Fq 'Draft release cannot contain a recorded container digest' "$publish_script" ||
   fail "published image recovery can rebuild without a recorded digest"
 grep -Fq 'git -C "$release_source_root" rev-parse --verify HEAD' "$publish_script" ||
