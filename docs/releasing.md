@@ -223,9 +223,13 @@ To recover an existing managed tag, run the `Release` workflow from `main` with
 the original `vX.Y.Z` tag. The `main` workflow is only the trusted control
 plane; the original tag commit remains the source and authorization subject.
 
-A draft rerun may restore missing aliases only when they are absent or already
-match the frozen digest. A public rerun cannot build or sign new bytes: it must
-use the digest recorded in Release notes, verify every configured registry and
-asset, and complete any remaining proof/latest reconciliation. Any immutable
-alias conflict, untrusted signature, missing recorded digest, or evidence
-mismatch requires operator investigation.
+A draft rerun reconciles each registry alias to the newly approved frozen
+digest while the Release has no committed container-digest marker. This
+pre-publication repair is bounded to the same App-authored draft, exact source,
+reviewed registry map, and protected environment approval. Once the draft
+records a container digest, every alias is immutable and a conflict fails
+closed. A public rerun cannot build, replace, or sign new bytes: it must use the
+digest recorded in Release notes, verify every configured registry and asset,
+and complete any remaining proof/latest reconciliation. Any committed alias
+conflict, untrusted signature, missing recorded digest, or evidence mismatch
+requires operator investigation.
