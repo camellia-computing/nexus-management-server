@@ -75,7 +75,8 @@ Publication separates evidence construction from production authority:
    commit, and records it as a `compatible-with` dependency.
 3. Buildx creates one OCI layout for `linux/amd64`. Trivy scans those exact
    bytes. Syft creates an SPDX SBOM. GitHub OIDC records provenance and SBOM
-   attestations for the canonical digest.
+   attestations for the canonical digest. The formal build does not import or
+   export a mutable GitHub Actions build cache.
 4. `frozen-release-evidence.json` binds the source commit, CI run, dependency,
    image digest, platform digest, SBOM, provenance, policy revisions, and the
    documented platform exception.
