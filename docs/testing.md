@@ -45,6 +45,11 @@ Chromium installation:
 CAMELLIA_NEXUS_RUN_ADMIN_UI_LIVE=1 scripts/test-container-runtime.sh <locally-loaded-image>
 ```
 
+The optional second argument is the release source root when trusted test
+control is intentionally relocated. Normal repository-local execution derives
+the root automatically; formal publication passes and validates the exact tag
+checkout explicitly.
+
 The runtime test creates an isolated PostgreSQL database with a schema owner plus three
 least-privilege runtime logins, enrollment factors and sessions, accounts, Team licenses, one-time
 deliveries, billing fixtures, a synthetic PDF, a pinned ClamAV scanner, worker, and hardened runtime

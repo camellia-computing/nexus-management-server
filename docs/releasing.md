@@ -117,6 +117,12 @@ highest completed immutable stable SemVer and never moves backward during an
 older release recovery. Production deployments must use
 `registry/repository@sha256:...`, never a mutable tag.
 
+Final runtime verification executes trusted control from an isolated temporary
+directory but explicitly binds helper scripts to the exact authorized tag
+checkout. The checkout HEAD and required non-symlink helper files are validated
+before the published digest is exercised, so relocating control code cannot
+silently change the release source root.
+
 ## Signing and certificate scope
 
 This repository publishes a service container, not native desktop or mobile
