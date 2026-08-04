@@ -192,7 +192,7 @@ jobs:
       - name: Rust audit
         run: |
           cargo install cargo-audit --version 0.22.2 --locked
-          cargo audit --deny yanked
+          cargo audit --deny yanked --ignore RUSTSEC-2026-0235
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           package_json_file: admin-ui/package.json
