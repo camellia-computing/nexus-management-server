@@ -1266,6 +1266,7 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
                 };
+                let followup = async {
                 let mut cleanup_failed = false;
                 if now >= next_dependency_check {
                     dependencies_ready = true;
@@ -1344,6 +1345,13 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
                         tokio::time::sleep(Duration::from_secs(2)).await;
                     }
                 }
+                };
+                if complete_before_shutdown(&mut shutdown_rx, followup)
+                    .await
+                    .is_none()
+                {
+                    break;
+                }
             }
         }
     }
@@ -1354,6 +1362,26 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
         task.await??;
     }
     Ok(())
+}
+
+async fn complete_before_shutdown<T>(
+    shutdown: &mut tokio::sync::watch::Receiver<bool>,
+    operation: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    if *shutdown.borrow() {
+        return None;
+    }
+    tokio::pin!(operation);
+    loop {
+        tokio::select! {
+            result = &mut operation => return Some(result),
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return None;
+                }
+            }
+        }
+    }
 }
 
 async fn advance_overdue_invoices(
@@ -2196,6 +2224,36 @@ mod tests {
     fn risky_jobs_are_explicit() {
         assert!(BulkJobKind::DeviceSetState.is_high_risk());
         assert!(!BulkJobKind::ActivationCodeRevoke.is_high_risk());
+    }
+
+    #[tokio::test]
+    async fn worker_followup_is_canceled_when_shutdown_arrives() {
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let operation = async move {
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        };
+        let signal = tokio::spawn(async move {
+            started_rx.await.expect("worker followup starts");
+            shutdown_tx.send(true).expect("request worker shutdown");
+        });
+
+        assert!(
+            complete_before_shutdown(&mut shutdown_rx, operation)
+                .await
+                .is_none()
+        );
+        signal.await.expect("shutdown signal task");
+    }
+
+    #[tokio::test]
+    async fn worker_followup_completes_without_shutdown() {
+        let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+        assert_eq!(
+            complete_before_shutdown(&mut shutdown_rx, async { 7 }).await,
+            Some(7)
+        );
     }
 
     #[test]
