@@ -152,10 +152,15 @@ if docker volume inspect "$secrets_volume" >/dev/null 2>&1; then
 fi
 docker volume create "$secrets_volume" >/dev/null
 secrets_volume_created=1
-tar --create --directory "$temporary_directory" --file - \
+tar --create --mode='a=r' --directory "$temporary_directory" --file - \
   entitlement-private.pem admin-keyring.json workspace-keyring.json webhook-keyring.json |
   docker run --rm --interactive --volume "$secrets_volume:/run/secrets" --entrypoint tar \
     "$postgres_image" -xf - -C /run/secrets
+docker run --rm --volume "$secrets_volume:/run/secrets:ro" --entrypoint sh "$image" -ec '
+  for secret in entitlement-private.pem admin-keyring.json workspace-keyring.json webhook-keyring.json; do
+    test -f "/run/secrets/$secret" && test -r "/run/secrets/$secret"
+  done
+'
 
 common=(
   --network "$network"
@@ -186,6 +191,10 @@ runtime_security=(
   --cap-drop ALL
   --security-opt no-new-privileges:true
 )
+
+uuid_v4() {
+  python3 -c 'import uuid; print(uuid.uuid4())'
+}
 
 totp_code() {
   python3 -c '
@@ -311,7 +320,7 @@ grep -Fq "\"id\": \"$license_id\"" <<<"$license"
 grep -Fq '"purchased_seats": 3' <<<"$license"
 
 echo "==> Verify activation-code idempotency and single-display behavior"
-read -r code_operation </proc/sys/kernel/random/uuid
+code_operation="$(uuid_v4)"
 issued="$(run_admin code issue --account "$account_id" --license "$license_id" \
   --issued-by "$operator_id" --reason "$reason" --operation-id "$code_operation")"
 grep -Fq '"code": "CNX1-' <<<"$issued"
@@ -531,7 +540,7 @@ echo "==> Provision an independent administrator for the live browser"
 live_admin_username=runtimebrowser
 live_admin_display_name='Runtime Browser'
 live_admin_password="$(python3 -c 'import secrets; print("B8!" + secrets.token_urlsafe(24))')"
-read -r live_admin_operation </proc/sys/kernel/random/uuid
+live_admin_operation="$(uuid_v4)"
 live_admin_body="$(jq -nc \
   --arg username "$live_admin_username" \
   --arg display_name "$live_admin_display_name" \
@@ -568,14 +577,14 @@ admin_post "/secret-deliveries/$live_delivery_id/acknowledge" "$live_claim_body"
 
 http_account_id="http_${account_id}"
 http_license_id="http_${license_id}"
-read -r account_operation </proc/sys/kernel/random/uuid
+account_operation="$(uuid_v4)"
 account_body="$(jq -nc --arg id "$http_account_id" --arg reason "$reason" \
   '{id: $id, note: "Admin HTTP runtime verification", reason: $reason}')"
 admin_post '/accounts' "$account_body" "$temporary_directory/account.json" \
   --config "$auth_config" --header "Idempotency-Key: $account_operation"
 jq -e --arg id "$http_account_id" '.id == $id' "$temporary_directory/account.json" >/dev/null
 
-read -r license_operation </proc/sys/kernel/random/uuid
+license_operation="$(uuid_v4)"
 license_body="$(jq -nc --arg id "$http_license_id" --arg account "$http_account_id" \
   --arg reason "$reason" \
   '{id: $id, accountId: $account, plan: "team", status: "active", expiresAt: null,
@@ -617,7 +626,7 @@ printf '%%PDF-1.7\n1 0 obj<</Type/Catalog>>endobj\n%%%%EOF\n' \
 chmod 0600 "$temporary_directory/runtime-clean-receipt.pdf"
 echo "==> Billing fixtures created for live evidence scanning"
 
-read -r issue_operation </proc/sys/kernel/random/uuid
+issue_operation="$(uuid_v4)"
 code_expiry="$(( $(date +%s) + 30 * 24 * 60 * 60 ))"
 code_body="$(jq -nc --arg account "$http_account_id" --arg license "$http_license_id" \
   --arg expiry "$code_expiry" --arg reason "$reason" \
@@ -640,7 +649,7 @@ admin_post "/secret-deliveries/$delivery_id/acknowledge" "$claim_body" \
   "$temporary_directory/code-acknowledged" --config "$auth_config"
 echo "==> HTTP activation-code delivery and replay verified"
 
-read -r invitation_operation </proc/sys/kernel/random/uuid
+invitation_operation="$(uuid_v4)"
 invitation_body="$(jq -nc --arg reason "$reason" \
   '{email: "runtime.member@example.invalid", displayName: "Runtime Member",
     role: "viewer", reason: $reason}')"
