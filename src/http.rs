@@ -17,7 +17,7 @@ use tower::{BoxError, ServiceBuilder};
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
-    trace::{DefaultMakeSpan, DefaultOnFailure, DefaultOnRequest, DefaultOnResponse, TraceLayer},
+    trace::{DefaultOnFailure, DefaultOnRequest, DefaultOnResponse, TraceLayer},
 };
 
 use crate::{
@@ -227,7 +227,9 @@ pub fn router_with_metrics(
         .layer(middleware::from_fn(crate::request_id::sanitize_request_id))
         .layer(
             TraceLayer::new_for_http()
-                .make_span_with(DefaultMakeSpan::new().level(http_level))
+                .make_span_with(move |request: &Request<Body>| {
+                    crate::request_id::http_request_span(http_level, request)
+                })
                 .on_request(DefaultOnRequest::new().level(http_level))
                 .on_response(DefaultOnResponse::new().level(http_level))
                 .on_failure(DefaultOnFailure::new().level(failure_level)),

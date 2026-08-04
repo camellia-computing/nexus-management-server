@@ -459,7 +459,11 @@ fn admin_router(
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(middleware::from_fn(crate::request_id::sanitize_request_id))
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &Request<Body>| {
+                crate::request_id::http_request_span(tracing::Level::DEBUG, request)
+            }),
+        )
         .with_state(state)
 }
 
