@@ -13,7 +13,7 @@
     "format:check": "prettier --check \"*.config.ts\" \"src/**/*.{svelte,ts,css}\" \"tests/**/*.{ts,json}\" \"static/**/*.js\"",
     "test:visual": "pnpm build && playwright test",
     "test:visual:built": "playwright test",
-    "test:visual:stability": "playwright test --workers=1 --repeat-each=2 --grep 'all text sizes persist'",
+    "test:visual:stability": "playwright test --workers=1 --repeat-each=2 --grep \"all text sizes persist\"",
     "test:live": "svelte-kit sync && playwright test --config playwright.live.config.ts"
   },
   "devDependencies": {
