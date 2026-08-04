@@ -30,6 +30,8 @@ const DATABASE_CHUNK_SIZE: usize = 1024 * 1024;
 const DEFAULT_MAX_OBJECT_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_DATABASE_HARD_LIMIT_BYTES: i64 = 20 * 1024 * 1024 * 1024;
 const XCHACHA20_POLY1305_TAG_BYTES: u64 = 16;
+const OBJECT_STORAGE_READINESS_PREFIX: &str = "camellia-nexus-readiness-v1";
+const OBJECT_STORAGE_READINESS_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Error)]
 pub enum ObjectStorageError {
@@ -743,6 +745,13 @@ impl ObjectStorageService {
         })
     }
 
+    pub async fn readiness_check(&self) -> ObjectStorageResult<()> {
+        match self.backend.as_ref() {
+            BlobBackend::Database => Ok(()),
+            BlobBackend::External(store) => external_backend_readiness(store.as_ref()).await,
+        }
+    }
+
     async fn trusted_now(&self) -> ObjectStorageResult<i64> {
         self.application
             .trusted_now()
@@ -1276,6 +1285,18 @@ impl ObjectStorageService {
     }
 }
 
+async fn external_backend_readiness(store: &dyn ObjectStore) -> ObjectStorageResult<()> {
+    let prefix = ObjectPath::from(OBJECT_STORAGE_READINESS_PREFIX);
+    tokio::time::timeout(
+        OBJECT_STORAGE_READINESS_TIMEOUT,
+        store.list_with_delimiter(Some(&prefix)),
+    )
+    .await
+    .map_err(|_| ObjectStorageError::Backend)?
+    .map(|_| ())
+    .map_err(|_| ObjectStorageError::Backend)
+}
+
 async fn ensure_storage_quota(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     incoming_bytes: i64,
@@ -1526,6 +1547,7 @@ mod tests {
     struct FakeObjectStore {
         inner: InMemory,
         fail_next_put_after_write: AtomicBool,
+        fail_readiness: AtomicBool,
         reported_size: Mutex<Option<u64>>,
         body_gets: AtomicUsize,
     }
@@ -1534,6 +1556,13 @@ mod tests {
         fn ambiguous_put() -> Self {
             Self {
                 fail_next_put_after_write: AtomicBool::new(true),
+                ..Self::default()
+            }
+        }
+
+        fn unavailable() -> Self {
+            Self {
+                fail_readiness: AtomicBool::new(true),
                 ..Self::default()
             }
         }
@@ -1623,6 +1652,12 @@ mod tests {
             &self,
             prefix: Option<&ObjectPath>,
         ) -> ObjectStoreResult<ListResult> {
+            if self.fail_readiness.load(Ordering::SeqCst) {
+                return Err(object_store::Error::Generic {
+                    store: "fake",
+                    source: Box::new(std::io::Error::other("object backend is unavailable")),
+                });
+            }
             self.inner.list_with_delimiter(prefix).await
         }
 
@@ -1691,6 +1726,17 @@ mod tests {
         );
         assert_eq!(evidence_media_type(b"%PDF-1.7\n"), Some("application/pdf"));
         assert_eq!(evidence_media_type(b"<script>"), None);
+    }
+
+    #[tokio::test]
+    async fn external_backend_readiness_probes_the_configured_store() {
+        external_backend_readiness(&FakeObjectStore::default())
+            .await
+            .expect("available external backend is ready");
+        assert!(matches!(
+            external_backend_readiness(&FakeObjectStore::unavailable()).await,
+            Err(ObjectStorageError::Backend)
+        ));
     }
 
     #[test]

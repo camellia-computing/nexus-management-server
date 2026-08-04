@@ -241,7 +241,6 @@ pub async fn run_admin_web(config: AdminHttpConfig) -> Result<(), Box<dyn std::e
     let evidence_scanner =
         EvidenceScanner::from_env(config.environment == Environment::Production)?;
     evidence_scanner.readiness_check().await?;
-    runtime_metrics.record_readiness(true);
     let application = AdminApplication::new(
         repository.clone(),
         time_max_forward_jump_seconds_from_env().map_err(|error| error.to_string())?,
@@ -252,6 +251,8 @@ pub async fn run_admin_web(config: AdminHttpConfig) -> Result<(), Box<dyn std::e
         keyring.clone(),
         ObjectStorageConfig::from_env()?,
     )?;
+    storage.readiness_check().await?;
+    runtime_metrics.record_readiness(true);
     let auth = AdminAuthService::new(application.clone(), keyring.clone())?;
     let identity = AdminIdentityService::new(application.clone(), keyring.clone());
     let jobs = AdminJobService::new(application.clone());
@@ -594,6 +595,7 @@ async fn admin_readyz(State(state): State<AdminHttpState>) -> Response<Body> {
                 .readiness_check(state.application.repository())
                 .await
                 .is_ok()
+            && state.storage.readiness_check().await.is_ok()
             && state.evidence_scanner.readiness_check().await.is_ok()
             && state.application.trusted_now().await.is_ok()
     })

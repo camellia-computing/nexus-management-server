@@ -1222,6 +1222,7 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
         keyring.clone(),
         ObjectStorageConfig::from_env()?,
     )?;
+    storage.readiness_check().await?;
     let scanner = EvidenceScanner::from_env(environment == Environment::Production)?;
     scanner.readiness_check().await?;
     runtime_metrics.record_readiness(true);
@@ -1278,6 +1279,10 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
                     if let Err(error) = scanner.readiness_check().await {
                         dependencies_ready = false;
                         tracing::error!(%error, "admin worker malware-scanner readiness check failed");
+                    }
+                    if let Err(error) = storage.readiness_check().await {
+                        dependencies_ready = false;
+                        tracing::error!(%error, "admin worker object-storage readiness check failed");
                     }
                     next_dependency_check =
                         now.saturating_add(WORKER_DEPENDENCY_CHECK_SECONDS);

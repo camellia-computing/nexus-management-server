@@ -165,7 +165,7 @@ CAMELLIA_NEXUS_CLAMAV_ADDRESS=clamav:3310
 
 转发来源地址默认不受信任。需要记录客户端地址时，反向代理必须先删除外部传入的 `X-Forwarded-For` 与 `X-Camellia-Proxy-Auth`，再写入已验证地址和 32–256 个可见 ASCII 字符的共享密钥；服务端通过 `CAMELLIA_NEXUS_ADMIN_FORWARDED_FOR_SECRET_PATH` 从有界常规文件读取同一密钥并以常量时间校验。未通过认证或不是合法 IP 的转发值不会进入审计记录。管理 origin 只能包含 HTTP(S) scheme 与 authority，不得包含用户名或密码；生产环境必须使用 HTTPS，且不应直接暴露到互联网。
 
-对象存储提供三档统一接口并始终执行对象级 XChaCha20-Poly1305 加密、SHA-256 完整性验证和配额控制：`filesystem` 适合单机小规模，`database` 通过 1 MiB PostgreSQL 分块支持中等规模，`s3` 适合大规模与多副本部署。外部后端写入先持久化 staging 元数据；即使上传响应不确定，worker 也会通过有界 HEAD/GET、密文长度、解密与摘要对账后完成提交或清理，绝不丢失唯一恢复记录。外部读取在分配内存前验证数据库与对象元数据，并在流式读取中执行绝对大小上限。付款证据只接受签名匹配的 PNG、JPEG、PDF，先进入隔离区；生产环境强制启用 ClamAV，扫描不可用时保持隔离并拒绝付款通过。
+对象存储提供三档统一接口并始终执行对象级 XChaCha20-Poly1305 加密、SHA-256 完整性验证和配额控制：`filesystem` 适合单机小规模，`database` 通过 1 MiB PostgreSQL 分块支持中等规模，`s3` 适合大规模与多副本部署。外部后端写入先持久化 staging 元数据；即使上传响应不确定，worker 也会通过有界 HEAD/GET、密文长度、解密与摘要对账后完成提交或清理，绝不丢失唯一恢复记录。外部读取在分配内存前验证数据库与对象元数据，并在流式读取中执行绝对大小上限。Admin Web 与 Worker 的启动和持续 readiness 会对保留前缀执行有界只读列举；S3 身份除对象读写/删除外还必须具备受前缀约束的 bucket 列举权限。付款证据只接受签名匹配的 PNG、JPEG、PDF，先进入隔离区；生产环境强制启用 ClamAV，扫描不可用时保持隔离并拒绝付款通过。
 
 ### API
 
@@ -430,12 +430,12 @@ entitlement 签发材料应由部署环境统一管理，轮换策略由发布�
 
 运行与维护配置：
 
-- `GET /healthz` 是不访问外部依赖的进程存活检查；公开/Admin `GET /readyz` 最多等待 2 秒检查 repository、必需 schema、所需密钥、Admin 恶意软件扫描器与持久时间权威，并在依赖不可用时返回 `503 not ready` 与 `Cache-Control: no-store`
+- `GET /healthz` 是不访问外部依赖的进程存活检查；公开/Admin `GET /readyz` 最多等待 2 秒检查 repository、必需 schema、所需密钥、Admin 对象存储、恶意软件扫描器与持久时间权威，并在依赖不可用时返回 `503 not ready` 与 `Cache-Control: no-store`
 - `CAMELLIA_NEXUS_HTTP_REQUEST_TIMEOUT_SECONDS`（默认 `15`）限制业务请求总时间；`CAMELLIA_NEXUS_HTTP_MAX_IN_FLIGHT`（默认 `256`）限制进程内并发，超时返回 504，过载返回 503，并附带 `Retry-After: 1`
 - `CAMELLIA_NEXUS_ADMIN_REQUEST_TIMEOUT_SECONDS`（默认 `180`）与 `CAMELLIA_NEXUS_ADMIN_MAX_IN_FLIGHT`（默认 `64`）只限制 `admin-web` 的 `/api/v1`；健康检查和静态资源不占用该预算。超时返回机器可读的 504，过载返回 503，二者均附带 `Retry-After: 1`
 - `CAMELLIA_NEXUS_DATABASE_ACQUIRE_TIMEOUT_SECONDS`（默认 `5`）限制等待 PostgreSQL 连接的时间；`CAMELLIA_NEXUS_DATABASE_MAX_CONNECTIONS`（默认 `8`）限制连接池大小。`serve`、`admin-web` 与 `admin-worker` 对无效值或零值均直接拒绝启动，不会静默使用默认值
 - 每个生产常驻角色都必须设置 `CAMELLIA_NEXUS_METRICS_BIND`。独立运维监听器提供 `/healthz` 与
-  Prometheus 文本 `/metrics`；Admin Worker 还提供持续反映数据库、密钥、扫描器与工作循环状态的
+  Prometheus 文本 `/metrics`；Admin Worker 还提供持续反映数据库、密钥、对象存储、扫描器与工作循环状态的
   `/readyz`，其容器健康检查必须使用该端点。默认应绑定回环地址。非回环地址还必须显式设置
   `CAMELLIA_NEXUS_METRICS_ALLOW_NON_LOOPBACK=true` 并由私有防火墙/入口隔离。`serve`、`admin-web` 与
   `admin-worker` 使用不同端口；指标只含有界的角色、状态码类别与结果标签，绝不包含租户、设备、URL、
@@ -655,7 +655,7 @@ CAMELLIA_NEXUS_CLAMAV_ADDRESS=clamav:3310
 
 Forwarded addresses are ignored by default. To record them, the proxy must strip incoming `X-Forwarded-For` and `X-Camellia-Proxy-Auth`, inject a verified address and a shared secret of 32–256 visible ASCII characters, and the server must read that same secret from the bounded regular file named by `CAMELLIA_NEXUS_ADMIN_FORWARDED_FOR_SECRET_PATH`. Unauthenticated or malformed values never enter audit records. The Admin origin may contain only an HTTP(S) scheme and authority, never a username or password. It must use HTTPS in production and should remain private.
 
-Object storage provides encrypted `filesystem`, PostgreSQL `database` (1 MiB chunks), and `s3` backends for small, medium and large deployments. Every object has a random data key, XChaCha20-Poly1305 encryption, SHA-256 validation and quota enforcement. External writes persist staging metadata first; even when an upload response is ambiguous, the worker retains the unique recovery record and uses bounded HEAD/GET, ciphertext length, decryption and digest checks to finalize or remove it. External reads validate database and object metadata before allocation and enforce an absolute cap while streaming. Payment evidence is signature-checked, quarantined and scanned; production refuses to start with scanning disabled, and payment approval fails closed unless every attachment is clean.
+Object storage provides encrypted `filesystem`, PostgreSQL `database` (1 MiB chunks), and `s3` backends for small, medium and large deployments. Every object has a random data key, XChaCha20-Poly1305 encryption, SHA-256 validation and quota enforcement. External writes persist staging metadata first; even when an upload response is ambiguous, the worker retains the unique recovery record and uses bounded HEAD/GET, ciphertext length, decryption and digest checks to finalize or remove it. External reads validate database and object metadata before allocation and enforce an absolute cap while streaming. Admin Web and Worker startup and continuing readiness perform a bounded read-only listing under a reserved prefix; an S3 identity therefore needs prefix-scoped bucket-list permission in addition to object read/write/delete access. Payment evidence is signature-checked, quarantined and scanned; production refuses to start with scanning disabled, and payment approval fails closed unless every attachment is clean.
 
 ### API
 
@@ -931,13 +931,13 @@ Logging configuration:
 
 Runtime and maintenance configuration:
 
-- `GET /healthz` is process liveness and does not touch external dependencies. Public/Admin `GET /readyz` waits at most two seconds for the repository, required schema, required key material, Admin malware scanner, and persistent-time checks, returning `503 not ready` with `Cache-Control: no-store` when a dependency is unavailable
+- `GET /healthz` is process liveness and does not touch external dependencies. Public/Admin `GET /readyz` waits at most two seconds for the repository, required schema, required key material, Admin object storage, malware scanner, and persistent-time checks, returning `503 not ready` with `Cache-Control: no-store` when a dependency is unavailable
 - `CAMELLIA_NEXUS_HTTP_REQUEST_TIMEOUT_SECONDS` (default `15`) bounds total business-request time. `CAMELLIA_NEXUS_HTTP_MAX_IN_FLIGHT` (default `256`) bounds per-process concurrency. Timeouts return 504; overload returns 503; both include `Retry-After: 1`
 - `CAMELLIA_NEXUS_ADMIN_REQUEST_TIMEOUT_SECONDS` (default `180`) and `CAMELLIA_NEXUS_ADMIN_MAX_IN_FLIGHT` (default `64`) apply only to `admin-web` `/api/v1`; health checks and static assets do not consume this budget. Timeout is a machine-readable 504 and overload a 503, both with `Retry-After: 1`
 - `CAMELLIA_NEXUS_DATABASE_ACQUIRE_TIMEOUT_SECONDS` (default `5`) bounds PostgreSQL pool waits, while `CAMELLIA_NEXUS_DATABASE_MAX_CONNECTIONS` (default `8`) bounds pool size. `serve`, `admin-web`, and `admin-worker` all reject invalid or zero values at startup instead of silently using defaults
 - `CAMELLIA_NEXUS_METRICS_BIND` is required for every production runtime role. The separate operations
   listener serves `/healthz` and Prometheus text at `/metrics`; the Admin Worker additionally exposes
-  `/readyz` with its continuously observed database, keyring, scanner, and iteration state, and its
+  `/readyz` with its continuously observed database, keyring, object-store, scanner, and iteration state, and its
   container health check must use that endpoint. Loopback is the safe default;
   a non-loopback address also requires `CAMELLIA_NEXUS_METRICS_ALLOW_NON_LOOPBACK=true` and a private
   firewall/ingress. Use separate ports for `serve`, `admin-web`, and `admin-worker`. Metrics expose

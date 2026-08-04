@@ -97,7 +97,7 @@ access to hidden credential tables merely to make a readiness probe pass.
 
 Each role has a distinct operations port (`9091`, `9092`, `9093` in the examples). These ports serve
 `/healthz` and `/metrics`; the Admin Worker port also serves `/readyz`, which reflects its current
-database, keyring, malware-scanner, and iteration state. Keep the ports loopback-bound or behind a
+database, keyring, object-store, malware-scanner, and iteration state. Keep the ports loopback-bound or behind a
 private metrics network. Public and Admin product traffic retain their own listeners. The Prometheus text contract uses the
 classic-compatible `camellia_nexus_` prefix and exposes these metric families:
 `process_uptime_seconds`, `http_requests_total`, `http_in_flight_requests`,
@@ -105,7 +105,7 @@ classic-compatible `camellia_nexus_` prefix and exposes these metric families:
 `background_iterations_total`.
 
 每个角色使用独立运维端口（示例为 `9091`、`9092`、`9093`），提供 `/healthz` 与 `/metrics`；
-Admin Worker 端口还提供反映当前数据库、密钥、恶意软件扫描器与工作循环状态的 `/readyz`。
+Admin Worker 端口还提供反映当前数据库、密钥、对象存储、恶意软件扫描器与工作循环状态的 `/readyz`。
 端口必须绑定回环或位于私有指标网络；公开业务与 Admin 流量继续使用各自独立监听器。Prometheus
 文本契约统一使用兼容经典命名规则的 `camellia_nexus_` 前缀，并公开以下指标族：
 `process_uptime_seconds`、`http_requests_total`、`http_in_flight_requests`、
