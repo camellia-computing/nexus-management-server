@@ -1265,6 +1265,7 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
                 }
             },
             result = jobs.run_once(&worker_id) => {
+                let followup = async {
                 let now = match application.trusted_now().await {
                     Ok(now) => now,
                     Err(error) => {
@@ -1272,10 +1273,9 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
                         runtime_metrics.record_background_iteration(BackgroundOutcome::Error);
                         tracing::error!(%error, "admin worker cleanup skipped because trusted time is unavailable");
                         tokio::time::sleep(Duration::from_secs(2)).await;
-                        continue;
+                        return;
                     }
                 };
-                let followup = async {
                 let mut cleanup_failed = false;
                 if now >= next_dependency_check {
                     dependencies_ready = true;
