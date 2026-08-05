@@ -139,11 +139,14 @@ sudo systemctl restart camellia-nexus-management-admin-worker.service
 
 Accept the rollout only after public and Admin `/readyz`, all three operations `/healthz` endpoints,
 the Worker operations `/readyz`, the expected binary version, Admin authentication and one worker
-operation succeed. All units use a 30-second stop timeout to cover request draining and claimed work.
+operation succeed. Public and Worker units use a 30-second stop timeout. Admin Web uses 210 seconds
+so its default 180-second request timeout can complete with drain margin; if that request timeout is
+increased, increase `TimeoutStopSec` with it.
 
 只有公开/Admin `/readyz`、三个运维 `/healthz`、Worker 运维 `/readyz`、预期二进制版本、Admin
-登录和一次 Worker 任务均成功后才能接受发布。所有 unit 均保留 30 秒退出窗口，以覆盖请求排空与
-已认领工作。
+登录和一次 Worker 任务均成功后才能接受发布。公开服务与 Worker unit 保留 30 秒退出窗口；Admin
+Web 保留 210 秒，以覆盖默认 180 秒请求上限并留出排空余量。提高请求上限时必须同步提高
+`TimeoutStopSec`。
 
 ## Rollback / 回滚
 

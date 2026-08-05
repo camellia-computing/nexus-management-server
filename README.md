@@ -74,7 +74,7 @@ CAMELLIA_NEXUS_CLEANUP_BATCH_SIZE=1000
 - PostgreSQL 使用固定到不可变摘要的 `postgres:18-alpine`，数据卷挂载到 `/var/lib/postgresql`
 - 服务默认只暴露到本机地址，生产入口应由反向代理提供 HTTPS
 - `docker-compose.yml` 显式关闭应用启动迁移；先执行受控的一次性迁移，再启动或滚动替换服务
-- 启动后使用 `GET /healthz` 与 `GET /readyz` 检查服务状态；容器内可执行 `camellia-nexus-management-server healthcheck http://127.0.0.1:<port>/readyz`，并给 SIGTERM 至少 30 秒退出窗口
+- 启动后使用 `GET /healthz` 与 `GET /readyz` 检查服务状态；容器内可执行 `camellia-nexus-management-server healthcheck http://127.0.0.1:<port>/readyz`。示例为 public/Worker 保留 30 秒、为默认 180 秒请求上限的 Admin Web 保留 210 秒 SIGTERM 退出窗口
 
 ### 数据库迁移策略
 
@@ -432,7 +432,7 @@ entitlement 签发材料应由部署环境统一管理，轮换策略由发布�
 
 - `GET /healthz` 是不访问外部依赖的进程存活检查；公开/Admin `GET /readyz` 最多等待 2 秒检查 repository、必需 schema、所需密钥、Admin 对象存储、恶意软件扫描器与持久时间权威，并在依赖不可用时返回 `503 not ready` 与 `Cache-Control: no-store`
 - `CAMELLIA_NEXUS_HTTP_REQUEST_TIMEOUT_SECONDS`（默认 `15`）限制业务请求总时间；`CAMELLIA_NEXUS_HTTP_MAX_IN_FLIGHT`（默认 `256`）限制进程内并发，超时返回 504，过载返回 503，并附带 `Retry-After: 1`
-- `CAMELLIA_NEXUS_ADMIN_REQUEST_TIMEOUT_SECONDS`（默认 `180`）与 `CAMELLIA_NEXUS_ADMIN_MAX_IN_FLIGHT`（默认 `64`）只限制 `admin-web` 的 `/api/v1`；健康检查和静态资源不占用该预算。超时返回机器可读的 504，过载返回 503，二者均附带 `Retry-After: 1`
+- `CAMELLIA_NEXUS_ADMIN_REQUEST_TIMEOUT_SECONDS`（默认 `180`）与 `CAMELLIA_NEXUS_ADMIN_MAX_IN_FLIGHT`（默认 `64`）只限制 `admin-web` 的 `/api/v1`；健康检查和静态资源不占用该预算。超时返回机器可读的 504，过载返回 503，二者均附带 `Retry-After: 1`。Admin Web 的平台停止宽限必须大于请求超时并保留排空余量；示例为默认值使用 210 秒，调整请求超时时必须同步调整该宽限
 - `CAMELLIA_NEXUS_DATABASE_ACQUIRE_TIMEOUT_SECONDS`（默认 `5`）限制等待 PostgreSQL 连接的时间；`CAMELLIA_NEXUS_DATABASE_MAX_CONNECTIONS`（默认 `8`）限制连接池大小。`serve`、`admin-web` 与 `admin-worker` 对无效值或零值均直接拒绝启动，不会静默使用默认值
 - 每个生产常驻角色都必须设置 `CAMELLIA_NEXUS_METRICS_BIND`。独立运维监听器提供 `/healthz` 与
   Prometheus 文本 `/metrics`；Admin Worker 还提供持续反映数据库、密钥、对象存储、扫描器与工作循环状态的
@@ -447,7 +447,7 @@ entitlement 签发材料应由部署环境统一管理，轮换策略由发布�
 - 应用内匿名全局 bucket 只是集群熔断器，不是来源级防滥用边界。生产 HTTPS 入口必须在转发 `/oauth/*` 和 `/v1/*` 前按经过验证的客户端源地址执行 WAF/限流，并丢弃外部伪造的 forwarded-IP 头；已认证设备流量应使用独立策略，避免匿名攻击耗尽正常刷新容量。重复匿名拒绝的持久审计按事件/原因采样，完整请求计数应由入口指标和访问日志保存
 - `CAMELLIA_NEXUS_MAINTENANCE_INTERVAL_SECONDS`（默认 `3600`）与 `CAMELLIA_NEXUS_CLEANUP_BATCH_SIZE`（默认 `1000`）控制清理任务。任务启动后立即运行一次，随后按间隔执行；过期 challenge 和 OAuth authorization code 保留 1 小时，refresh session 在 family 的绝对到期时间后再保留 7 天用于重放检测，rate-limit bucket 保留 2 小时，然后按表分批删除
 - 清理任务不会删除账号、授权、设备、数据库授权码或审计事件；这些记录需按业务与合规政策保留
-- 服务在 SIGTERM 或 Ctrl-C 后停止接收新连接、等待在途请求完成、停止维护任务并关闭 repository；Webhook Worker 最多用 20 秒排空已认领交付，超时后中止剩余任务并保留可重试状态。部署平台的停止宽限必须同时覆盖请求超时和 Worker 排空；示例 compose 与 systemd 配置使用 30 秒
+- 服务在 SIGTERM 或 Ctrl-C 后停止接收新连接、等待在途请求完成、停止维护任务并关闭 repository；Webhook Worker 最多用 20 秒排空已认领交付，超时后中止剩余任务并保留可重试状态。部署平台的停止宽限必须覆盖相应角色的最长排空：示例 compose 与 systemd 为 public/Worker 使用 30 秒，为默认请求超时 180 秒的 Admin Web 使用 210 秒
 
 ### 本地验证
 
@@ -564,7 +564,7 @@ Container deployment notes:
   the migration command applies the explicit per-table grants
 - The service example binds only to localhost; production ingress should terminate HTTPS through a reverse proxy
 - `docker-compose.yml` explicitly disables application-startup migrations; run a controlled one-shot migration before starting or rolling the service
-- Use `GET /healthz` and `GET /readyz` after startup. Inside the container, run `camellia-nexus-management-server healthcheck http://127.0.0.1:<port>/readyz`. Give SIGTERM at least a 30-second stop window.
+- Use `GET /healthz` and `GET /readyz` after startup. Inside the container, run `camellia-nexus-management-server healthcheck http://127.0.0.1:<port>/readyz`. The sample gives public/Worker roles a 30-second SIGTERM stop window and Admin Web a 210-second window for its default 180-second request limit.
 
 ### Database migration policy
 
@@ -933,7 +933,7 @@ Runtime and maintenance configuration:
 
 - `GET /healthz` is process liveness and does not touch external dependencies. Public/Admin `GET /readyz` waits at most two seconds for the repository, required schema, required key material, Admin object storage, malware scanner, and persistent-time checks, returning `503 not ready` with `Cache-Control: no-store` when a dependency is unavailable
 - `CAMELLIA_NEXUS_HTTP_REQUEST_TIMEOUT_SECONDS` (default `15`) bounds total business-request time. `CAMELLIA_NEXUS_HTTP_MAX_IN_FLIGHT` (default `256`) bounds per-process concurrency. Timeouts return 504; overload returns 503; both include `Retry-After: 1`
-- `CAMELLIA_NEXUS_ADMIN_REQUEST_TIMEOUT_SECONDS` (default `180`) and `CAMELLIA_NEXUS_ADMIN_MAX_IN_FLIGHT` (default `64`) apply only to `admin-web` `/api/v1`; health checks and static assets do not consume this budget. Timeout is a machine-readable 504 and overload a 503, both with `Retry-After: 1`
+- `CAMELLIA_NEXUS_ADMIN_REQUEST_TIMEOUT_SECONDS` (default `180`) and `CAMELLIA_NEXUS_ADMIN_MAX_IN_FLIGHT` (default `64`) apply only to `admin-web` `/api/v1`; health checks and static assets do not consume this budget. Timeout is a machine-readable 504 and overload a 503, both with `Retry-After: 1`. The Admin Web platform stop grace must exceed the request timeout and retain drain margin; the sample uses 210 seconds for the default, and changing the request timeout requires changing that grace with it
 - `CAMELLIA_NEXUS_DATABASE_ACQUIRE_TIMEOUT_SECONDS` (default `5`) bounds PostgreSQL pool waits, while `CAMELLIA_NEXUS_DATABASE_MAX_CONNECTIONS` (default `8`) bounds pool size. `serve`, `admin-web`, and `admin-worker` all reject invalid or zero values at startup instead of silently using defaults
 - `CAMELLIA_NEXUS_METRICS_BIND` is required for every production runtime role. The separate operations
   listener serves `/healthz` and Prometheus text at `/metrics`; the Admin Worker additionally exposes
@@ -950,7 +950,7 @@ Runtime and maintenance configuration:
 - The in-application anonymous global bucket is a cluster circuit breaker, not a source-level abuse boundary. Production HTTPS ingress must apply WAF/per-source limits to `/oauth/*` and `/v1/*` using a verified client address and must discard externally supplied forwarding headers before setting its own. Authenticated device traffic should use a separate policy so anonymous abuse cannot consume normal refresh capacity. Durable audits for repeated anonymous denials are sampled by event/reason; ingress metrics and access logs retain full request counts
 - `CAMELLIA_NEXUS_MAINTENANCE_INTERVAL_SECONDS` (default `3600`) and `CAMELLIA_NEXUS_CLEANUP_BATCH_SIZE` (default `1000`) control cleanup. It runs once immediately after startup and then at the configured interval. Expired challenges and OAuth authorization codes are retained for one hour; refresh sessions are retained until seven days after the session family's absolute expiry for replay detection; rate-limit buckets are retained for two hours; records are then deleted in per-table batches
 - Cleanup never deletes accounts, licenses, devices, database activation codes or audit events; retain those records according to business and compliance policy
-- On SIGTERM or Ctrl-C, the service stops accepting new connections, drains in-flight requests, stops maintenance and closes the repository. The Webhook worker has up to 20 seconds to drain claimed deliveries, then aborts remaining tasks without marking them successful. The platform stop grace must cover both request timeout and worker drain; the sample compose and systemd configurations use 30 seconds
+- On SIGTERM or Ctrl-C, the service stops accepting new connections, drains in-flight requests, stops maintenance and closes the repository. The Webhook worker has up to 20 seconds to drain claimed deliveries, then aborts remaining tasks without marking them successful. Platform stop grace must cover the longest drain for each role: the sample Compose and systemd configurations use 30 seconds for public/Worker and 210 seconds for Admin Web with its default 180-second request timeout
 
 ### Local verification
 
