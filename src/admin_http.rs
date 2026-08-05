@@ -2648,7 +2648,11 @@ async fn upload_payment_evidence(
         Ok(response) => response,
         Err(error) => {
             if let Err(cleanup_error) = state.storage.delete(&object.id).await {
-                tracing::error!(object_id = object.id, %cleanup_error, "orphaned payment evidence cleanup failed");
+                tracing::error!(
+                    object_ref = %crate::crypto::stable_log_reference(&object.id),
+                    %cleanup_error,
+                    "orphaned payment evidence cleanup failed"
+                );
             }
             return Err(error);
         }
@@ -2659,7 +2663,11 @@ async fn upload_payment_evidence(
         .is_some_and(|id| id != object.id)
         && let Err(cleanup_error) = state.storage.delete(&object.id).await
     {
-        tracing::error!(object_id = object.id, %cleanup_error, "orphaned payment evidence cleanup failed");
+        tracing::error!(
+            object_ref = %crate::crypto::stable_log_reference(&object.id),
+            %cleanup_error,
+            "orphaned payment evidence cleanup failed"
+        );
     }
     payment_evidence_upload_response(response)
 }

@@ -26,7 +26,7 @@ use crate::{
     },
     config::{Environment, database_pool_config_from_env, time_max_forward_jump_seconds_from_env},
     contracts::DeviceState,
-    crypto::{random_id, sha256_hex},
+    crypto::{random_id, sha256_hex, stable_log_reference},
     domain::{AccountState, AuditEventRecord, LicenseStatus},
     error::ApiError,
     metrics::{BackgroundOutcome, MetricsServer, RuntimeMetrics, RuntimeRole},
@@ -1256,7 +1256,10 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
         worker_shutdown_signal().await;
         let _ = signal_tx.send(true);
     });
-    tracing::info!(worker_id, "Camellia Nexus admin worker started");
+    tracing::info!(
+        worker_ref = %stable_log_reference(&worker_id),
+        "Camellia Nexus admin worker started"
+    );
     loop {
         tokio::select! {
             changed = shutdown_rx.changed() => {
@@ -1545,8 +1548,8 @@ async fn retry_payment_evidence(
             .await
             .map_err(|_| "database unavailable while committing evidence update".to_owned())?;
         tracing::info!(
-            evidence_id,
-            object_id,
+            evidence_ref = %stable_log_reference(&evidence_id),
+            object_ref = %stable_log_reference(&object_id),
             scan_status,
             "payment evidence rescanned"
         );
@@ -1591,10 +1594,16 @@ pub(crate) async fn purge_stale_objects(
                 .map_err(|error| error.to_string())?
             {
                 StagingReconciliation::Finalized => {
-                    tracing::info!(object_id = id, "staged stored object finalized");
+                    tracing::info!(
+                        object_ref = %stable_log_reference(&id),
+                        "staged stored object finalized"
+                    );
                 }
                 StagingReconciliation::Removed => {
-                    tracing::info!(object_id = id, "invalid staged stored object removed");
+                    tracing::info!(
+                        object_ref = %stable_log_reference(&id),
+                        "invalid staged stored object removed"
+                    );
                 }
                 StagingReconciliation::Unchanged => {}
             }
@@ -1603,7 +1612,10 @@ pub(crate) async fn purge_stale_objects(
                 .delete(&id)
                 .await
                 .map_err(|error| error.to_string())?;
-            tracing::info!(object_id = id, "stale stored object removed");
+            tracing::info!(
+                object_ref = %stable_log_reference(&id),
+                "stale stored object removed"
+            );
         }
     }
     Ok(())

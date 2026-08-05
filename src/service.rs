@@ -27,7 +27,7 @@ use crate::{
     },
     crypto::{
         EntitlementSigner, canonicalize_activation_code, pkce_s256_challenge, random_id,
-        random_secret, sha256_hex, verify_device_proof,
+        random_secret, sha256_hex, stable_log_reference, verify_device_proof,
     },
     domain::{
         AUTHORIZATION_RESULT_RETRY_SECONDS, Account, ActivationCodeRecord, ActivationCodeStatus,
@@ -4306,14 +4306,6 @@ fn registration_metadata(request: &DeviceRegistrationRequest) -> BTreeMap<String
 fn non_empty_str(value: &str) -> Option<&str> {
     let value = value.trim();
     (!value.is_empty()).then_some(value)
-}
-
-fn stable_log_reference(value: &str) -> String {
-    if value.is_empty() {
-        String::new()
-    } else {
-        format!("sha256:{}", sha256_hex(value))
-    }
 }
 
 fn bounded_metadata_value(value: &str) -> String {

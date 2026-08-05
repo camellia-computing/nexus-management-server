@@ -16,6 +16,7 @@ use crate::{
     admin_auth::{AdminPermission, authorize_admin_mutation},
     admin_operation::{self, AdminOperationClaim},
     contracts::{DeviceState, Plan},
+    crypto::stable_log_reference,
     domain::{
         AUTHORIZATION_RESULT_RETRY_SECONDS, Account, AccountState, ActivationCodeRecord,
         ActivationCodeStatus, AuditEventRecord, AuthorizationCodeRedemption, Device, License,
@@ -4190,7 +4191,7 @@ fn row_document<T: serde::de::DeserializeOwned>(row: PgRow) -> Result<T> {
 }
 
 fn row_audit_event(row: PgRow) -> Result<AuditEventRecord> {
-    let id = row
+    let id: String = row
         .try_get("id")
         .map_err(|error| database_error("postgres_audit_event_decode", error))?;
     let metadata = row
@@ -4198,7 +4199,7 @@ fn row_audit_event(row: PgRow) -> Result<AuditEventRecord> {
         .map_err(|error| database_error("postgres_audit_event_decode", error))?;
     if !metadata.is_object() {
         tracing::warn!(
-            audit_event_id = %id,
+            audit_event_ref = %stable_log_reference(&id),
             "audit metadata is not an object; returning the normalized event without metadata"
         );
     }
