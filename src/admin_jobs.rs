@@ -40,6 +40,7 @@ const JOB_HEARTBEAT_SECONDS: u64 = 20;
 const WORKER_DEPENDENCY_CHECK_SECONDS: i64 = 10;
 const WORKER_CLEANUP_INTERVAL_SECONDS: i64 = 60;
 const OVERDUE_INVOICE_BATCH_SIZE: i64 = 100;
+const SECRET_CLEANUP_BATCH_SIZE: i64 = 100;
 const MAX_TARGETS: usize = 10_000;
 const MAX_ATTEMPTS: i32 = 3;
 
@@ -1233,6 +1234,7 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
     let worker_id = random_id("admin_worker");
     let mut next_invoice_advance = 0_i64;
     let mut next_secret_purge = 0_i64;
+    let mut next_storage_maintenance = 0_i64;
     let mut next_dependency_check = application
         .trusted_now()
         .await?
@@ -1320,22 +1322,43 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 if now >= next_secret_purge {
+                    let mut purge_failed = false;
+                    let mut purged_deliveries = 0;
+                    let mut purged_enrollment_states = 0;
                     match purge_secret_deliveries(application.repository(), now).await {
-                        Ok(purged) if purged > 0 => tracing::info!(purged, "expired admin secret deliveries purged"),
-                        Ok(_) => {}
+                        Ok(purged) => {
+                            purged_deliveries = purged;
+                            if purged > 0 {
+                                tracing::info!(purged, "expired admin secret deliveries purged");
+                            }
+                        }
                         Err(error) => {
                             cleanup_failed = true;
+                            purge_failed = true;
                             tracing::error!(%error, "admin secret delivery purge failed");
                         }
                     }
                     match purge_enrollment_states(application.repository(), now).await {
-                        Ok(purged) if purged > 0 => tracing::info!(purged, "expired administrator enrollment secrets purged"),
-                        Ok(_) => {}
+                        Ok(purged) => {
+                            purged_enrollment_states = purged;
+                            if purged > 0 {
+                                tracing::info!(purged, "expired administrator enrollment secrets purged");
+                            }
+                        }
                         Err(error) => {
                             cleanup_failed = true;
+                            purge_failed = true;
                             tracing::error!(%error, "administrator enrollment secret purge failed");
                         }
                     }
+                    next_secret_purge = next_secret_purge_check(
+                        now,
+                        purge_failed,
+                        purged_deliveries,
+                        purged_enrollment_states,
+                    );
+                }
+                if now >= next_storage_maintenance {
                     if let Err(error) = retry_payment_evidence(application.repository(), &storage, &scanner, now).await {
                         cleanup_failed = true;
                         tracing::error!(%error, "payment evidence retry failed");
@@ -1344,7 +1367,8 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
                         cleanup_failed = true;
                         tracing::error!(%error, "stale object cleanup failed");
                     }
-                    next_secret_purge = now.saturating_add(WORKER_CLEANUP_INTERVAL_SECONDS);
+                    next_storage_maintenance =
+                        now.saturating_add(WORKER_CLEANUP_INTERVAL_SECONDS);
                 }
                 let iteration_ready = result.is_ok() && !cleanup_failed && dependencies_ready;
                 runtime_metrics.record_readiness(iteration_ready);
@@ -1484,15 +1508,41 @@ fn next_overdue_invoice_check(now: i64, advanced: u64) -> i64 {
     }
 }
 
+fn next_secret_purge_check(
+    now: i64,
+    failed: bool,
+    purged_deliveries: u64,
+    purged_enrollment_states: u64,
+) -> i64 {
+    if !failed
+        && (purged_deliveries >= SECRET_CLEANUP_BATCH_SIZE as u64
+            || purged_enrollment_states >= SECRET_CLEANUP_BATCH_SIZE as u64)
+    {
+        now
+    } else {
+        now.saturating_add(WORKER_CLEANUP_INTERVAL_SECONDS)
+    }
+}
+
 async fn purge_secret_deliveries(
     repository: &PostgresRepository,
     now: i64,
 ) -> Result<u64, ApiError> {
     Ok(sqlx::query(
-        "DELETE FROM admin_secret_deliveries
-         WHERE expires_at <= $1 OR acknowledged_at IS NOT NULL",
+        "WITH candidates AS (
+             SELECT id FROM admin_secret_deliveries
+             WHERE expires_at <= $1 OR acknowledged_at IS NOT NULL
+             ORDER BY (acknowledged_at IS NULL),
+                      COALESCE(acknowledged_at, expires_at), id
+             FOR UPDATE SKIP LOCKED
+             LIMIT $2
+         )
+         DELETE FROM admin_secret_deliveries AS deliveries
+         USING candidates
+         WHERE deliveries.id = candidates.id",
     )
     .bind(now)
+    .bind(SECRET_CLEANUP_BATCH_SIZE)
     .execute(&repository.pool)
     .await
     .map_err(|_| ApiError::Database)?
@@ -1504,12 +1554,23 @@ async fn purge_enrollment_states(
     now: i64,
 ) -> Result<u64, ApiError> {
     Ok(sqlx::query(
-        "DELETE FROM admin_enrollment_states s
-         USING admin_enrollment_tokens t
-         WHERE s.token_hash = t.token_hash
-           AND (t.expires_at <= $1 OR t.consumed_at IS NOT NULL)",
+        "WITH candidates AS (
+             SELECT states.token_hash
+             FROM admin_enrollment_states AS states
+             JOIN admin_enrollment_tokens AS tokens
+               ON tokens.token_hash = states.token_hash
+             WHERE tokens.expires_at <= $1 OR tokens.consumed_at IS NOT NULL
+             ORDER BY (tokens.consumed_at IS NULL),
+                      COALESCE(tokens.consumed_at, tokens.expires_at), states.token_hash
+             FOR UPDATE OF tokens, states SKIP LOCKED
+             LIMIT $2
+         )
+         DELETE FROM admin_enrollment_states AS states
+         USING candidates
+         WHERE states.token_hash = candidates.token_hash",
     )
     .bind(now)
+    .bind(SECRET_CLEANUP_BATCH_SIZE)
     .execute(&repository.pool)
     .await
     .map_err(|_| ApiError::Database)?
@@ -2260,6 +2321,181 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL"]
+    async fn secret_cleanup_is_bounded_and_drains_backlogs() {
+        let database_url = std::env::var("TEST_DATABASE_URL")
+            .expect("TEST_DATABASE_URL is required for the PostgreSQL integration test");
+        let repository = PostgresRepository::connect(&database_url, 2, Duration::from_secs(5))
+            .await
+            .expect("connect PostgreSQL");
+        repository.migrate().await.expect("run migrations");
+
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let actor_id = format!("purge_actor_{suffix}");
+        let session_id = format!("purge_session_{suffix}");
+        let delivery_prefix = format!("purge_delivery_{suffix}_");
+        let now = 2_000_000_000_i64;
+        sqlx::query(
+            "INSERT INTO admin_users
+                (id, username, display_name, status, created_at, updated_at)
+             VALUES ($1, $2, 'Purge test', 'active', $3, $3)",
+        )
+        .bind(&actor_id)
+        .bind(format!("purge-{suffix}"))
+        .bind(now - 60)
+        .execute(&repository.pool)
+        .await
+        .expect("insert purge-test administrator");
+        sqlx::query(
+            "INSERT INTO admin_sessions
+                (id, user_id, token_hash, csrf_hash, auth_time, elevated_until,
+                 last_seen_at, expires_at, created_at)
+             VALUES ($1, $2, $3, $4, $5, $5, $5, $6, $5)",
+        )
+        .bind(&session_id)
+        .bind(&actor_id)
+        .bind(sha256_hex(&format!("purge-session-token-{suffix}")))
+        .bind(sha256_hex(&format!("purge-session-csrf-{suffix}")))
+        .bind(now - 60)
+        .bind(now + 60)
+        .execute(&repository.pool)
+        .await
+        .expect("insert purge-test session");
+        sqlx::query(
+            "INSERT INTO admin_secret_deliveries
+                (id, actor_id, session_id, purpose, key_id, nonce, ciphertext,
+                 claim_token_hash, expires_at, created_at)
+             SELECT $1 || series::TEXT, $2, $3, 'admin_enrollment', 'purge-test-key',
+                    decode('00', 'hex'), decode('00', 'hex'),
+                    md5($4 || series::TEXT) || md5($4 || series::TEXT), $5 - 1, $5 - 60
+             FROM generate_series(1, $6::BIGINT) AS series",
+        )
+        .bind(&delivery_prefix)
+        .bind(&actor_id)
+        .bind(&session_id)
+        .bind(format!("purge-delivery-claim-{suffix}-"))
+        .bind(now)
+        .bind(SECRET_CLEANUP_BATCH_SIZE + 1)
+        .execute(&repository.pool)
+        .await
+        .expect("insert expired secret deliveries");
+        sqlx::query(
+            "INSERT INTO admin_enrollment_tokens
+                (token_hash, user_id, purpose, created_by, reason, expires_at, created_at)
+             SELECT md5($1 || series::TEXT) || md5($1 || series::TEXT), $2,
+                    'enroll', $2, 'purge test', $3 - 1, $3 - 60
+             FROM generate_series(1, $4::BIGINT) AS series",
+        )
+        .bind(format!("purge-enrollment-token-{suffix}-"))
+        .bind(&actor_id)
+        .bind(now)
+        .bind(SECRET_CLEANUP_BATCH_SIZE + 1)
+        .execute(&repository.pool)
+        .await
+        .expect("insert expired enrollment tokens");
+        sqlx::query(
+            "INSERT INTO admin_enrollment_states
+                (token_hash, key_id, nonce, ciphertext, created_at)
+             SELECT token_hash, 'purge-test-key', decode('00', 'hex'),
+                    decode('00', 'hex'), $2 - 60
+             FROM admin_enrollment_tokens WHERE user_id = $1",
+        )
+        .bind(&actor_id)
+        .bind(now)
+        .execute(&repository.pool)
+        .await
+        .expect("insert expired enrollment states");
+
+        let mut blocker = repository.pool.begin().await.expect("begin purge blocker");
+        let locked_delivery_id: String = sqlx::query_scalar(
+            "SELECT id FROM admin_secret_deliveries
+             WHERE actor_id = $1 ORDER BY id LIMIT 1 FOR UPDATE",
+        )
+        .bind(&actor_id)
+        .fetch_one(&mut *blocker)
+        .await
+        .expect("lock one secret delivery");
+        let locked_state_hash: String = sqlx::query_scalar(
+            "SELECT states.token_hash
+             FROM admin_enrollment_states AS states
+             JOIN admin_enrollment_tokens AS tokens
+               ON tokens.token_hash = states.token_hash
+             WHERE tokens.user_id = $1
+             ORDER BY states.token_hash LIMIT 1
+             FOR UPDATE OF tokens, states",
+        )
+        .bind(&actor_id)
+        .fetch_one(&mut *blocker)
+        .await
+        .expect("lock one enrollment state");
+        let first_deliveries = purge_secret_deliveries(&repository, now)
+            .await
+            .expect("purge first secret-delivery batch");
+        let first_states = purge_enrollment_states(&repository, now)
+            .await
+            .expect("purge first enrollment-state batch");
+        let remaining_after_first: (i64, i64) = sqlx::query_as(
+            "SELECT
+                (SELECT count(*) FROM admin_secret_deliveries WHERE actor_id = $1),
+                (SELECT count(*) FROM admin_enrollment_states s
+                 JOIN admin_enrollment_tokens t ON t.token_hash = s.token_hash
+                 WHERE t.user_id = $1)",
+        )
+        .bind(&actor_id)
+        .fetch_one(&repository.pool)
+        .await
+        .expect("count first secret-cleanup batch");
+        let remaining_ids: (String, String) = sqlx::query_as(
+            "SELECT
+                (SELECT id FROM admin_secret_deliveries WHERE actor_id = $1),
+                (SELECT s.token_hash FROM admin_enrollment_states s
+                 JOIN admin_enrollment_tokens t ON t.token_hash = s.token_hash
+                 WHERE t.user_id = $1)",
+        )
+        .bind(&actor_id)
+        .fetch_one(&repository.pool)
+        .await
+        .expect("load locked rows skipped by secret cleanup");
+        blocker.commit().await.expect("release purge blocker");
+        let second_deliveries = purge_secret_deliveries(&repository, now)
+            .await
+            .expect("purge final secret-delivery batch");
+        let second_states = purge_enrollment_states(&repository, now)
+            .await
+            .expect("purge final enrollment-state batch");
+        let remaining_after_second: (i64, i64) = sqlx::query_as(
+            "SELECT
+                (SELECT count(*) FROM admin_secret_deliveries WHERE actor_id = $1),
+                (SELECT count(*) FROM admin_enrollment_states s
+                 JOIN admin_enrollment_tokens t ON t.token_hash = s.token_hash
+                 WHERE t.user_id = $1)",
+        )
+        .bind(&actor_id)
+        .fetch_one(&repository.pool)
+        .await
+        .expect("count final secret-cleanup batch");
+
+        sqlx::query("DELETE FROM admin_users WHERE id = $1")
+            .bind(&actor_id)
+            .execute(&repository.pool)
+            .await
+            .expect("delete purge-test administrator");
+        repository.close().await;
+
+        assert_eq!(
+            (first_deliveries, first_states),
+            (
+                SECRET_CLEANUP_BATCH_SIZE as u64,
+                SECRET_CLEANUP_BATCH_SIZE as u64
+            )
+        );
+        assert_eq!(remaining_after_first, (1, 1));
+        assert_eq!(remaining_ids, (locked_delivery_id, locked_state_hash));
+        assert_eq!((second_deliveries, second_states), (1, 1));
+        assert_eq!(remaining_after_second, (0, 0));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL"]
     async fn overdue_invoice_transition_is_bounded_versioned_and_audited() {
         let database_url = std::env::var("TEST_DATABASE_URL")
             .expect("TEST_DATABASE_URL is required for the PostgreSQL integration test");
@@ -2426,6 +2662,27 @@ mod tests {
         );
         assert_eq!(
             next_overdue_invoice_check(now, OVERDUE_INVOICE_BATCH_SIZE as u64 - 1),
+            now + WORKER_CLEANUP_INTERVAL_SECONDS
+        );
+    }
+
+    #[test]
+    fn secret_backlog_rechecks_immediately_without_repeating_storage_maintenance() {
+        let now = 2_000_000_000_i64;
+        assert_eq!(
+            next_secret_purge_check(now, false, SECRET_CLEANUP_BATCH_SIZE as u64, 0),
+            now
+        );
+        assert_eq!(
+            next_secret_purge_check(now, false, 0, SECRET_CLEANUP_BATCH_SIZE as u64),
+            now
+        );
+        assert_eq!(
+            next_secret_purge_check(now, false, SECRET_CLEANUP_BATCH_SIZE as u64 - 1, 0),
+            now + WORKER_CLEANUP_INTERVAL_SECONDS
+        );
+        assert_eq!(
+            next_secret_purge_check(now, true, SECRET_CLEANUP_BATCH_SIZE as u64, 0),
             now + WORKER_CLEANUP_INTERVAL_SECONDS
         );
     }

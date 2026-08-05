@@ -106,8 +106,8 @@ async fn postgres_migrations_and_repository_readiness_are_exercised() {
             .await
             .expect("inspect applied migrations");
     assert_eq!(
-        applied_migrations, 2,
-        "the baseline and append-only billing worker index migration must be applied"
+        applied_migrations, 3,
+        "the baseline and both append-only worker index migrations must be applied"
     );
     let audit_index_definition: String =
         sqlx::query_scalar("SELECT pg_get_indexdef('audit_events_global_keyset_idx'::regclass)")
@@ -122,6 +122,22 @@ async fn postgres_migrations_and_repository_readiness_are_exercised() {
             .expect("inspect overdue billing worker index");
     assert!(billing_worker_index_definition.contains("(due_at, id)"));
     assert!(billing_worker_index_definition.contains("WHERE (status = 'open'::text)"));
+    let delivery_purge_index_definition: String = sqlx::query_scalar(
+        "SELECT pg_get_indexdef('admin_secret_deliveries_purge_order_idx'::regclass)",
+    )
+    .fetch_one(&schema_pool)
+    .await
+    .expect("inspect secret-delivery purge index");
+    assert!(delivery_purge_index_definition.contains("(acknowledged_at IS NULL)"));
+    assert!(delivery_purge_index_definition.contains("COALESCE(acknowledged_at, expires_at)"));
+    let enrollment_purge_index_definition: String = sqlx::query_scalar(
+        "SELECT pg_get_indexdef('admin_enrollment_tokens_state_purge_idx'::regclass)",
+    )
+    .fetch_one(&schema_pool)
+    .await
+    .expect("inspect enrollment-state purge index");
+    assert!(enrollment_purge_index_definition.contains("(consumed_at IS NULL)"));
+    assert!(enrollment_purge_index_definition.contains("COALESCE(consumed_at, expires_at)"));
     schema_pool.close().await;
 
     let initial_time = repository
