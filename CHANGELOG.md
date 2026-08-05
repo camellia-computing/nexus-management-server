@@ -3,6 +3,19 @@
 All notable changes to the Camellia Nexus Management Server will be recorded
 here from the first commercial release onward.
 
+## [1.0.1] - 2026-08-05
+
+### Fixed
+
+- reconcile completed publication lifecycle (#9)
+
+- bind runtime checks to tag source (#10)
+
+- reconcile incomplete registry aliases (#11)
+
+- harden Nexus management runtime boundaries
+
+
 ## [1.0.0] - 2026-07-31
 
 ### Added
