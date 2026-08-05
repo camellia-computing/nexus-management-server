@@ -38,6 +38,8 @@ const PREVIEW_TTL_SECONDS: i64 = 10 * 60;
 const JOB_LEASE_SECONDS: i64 = 60;
 const JOB_HEARTBEAT_SECONDS: u64 = 20;
 const WORKER_DEPENDENCY_CHECK_SECONDS: i64 = 10;
+const WORKER_CLEANUP_INTERVAL_SECONDS: i64 = 60;
+const OVERDUE_INVOICE_BATCH_SIZE: i64 = 100;
 const MAX_TARGETS: usize = 10_000;
 const MAX_ATTEMPTS: i32 = 3;
 
@@ -1229,6 +1231,7 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
     runtime_metrics.record_readiness(true);
     let jobs = AdminJobService::new(application.clone());
     let worker_id = random_id("admin_worker");
+    let mut next_invoice_advance = 0_i64;
     let mut next_secret_purge = 0_i64;
     let mut next_dependency_check = application
         .trusted_now()
@@ -1300,15 +1303,23 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
                     next_dependency_check =
                         now.saturating_add(WORKER_DEPENDENCY_CHECK_SECONDS);
                 }
-                if now >= next_secret_purge {
+                if now >= next_invoice_advance {
                     match advance_overdue_invoices(application.repository(), now).await {
-                        Ok(advanced) if advanced > 0 => tracing::info!(advanced, "overdue invoices advanced by trusted-time worker"),
-                        Ok(_) => {}
+                        Ok(advanced) => {
+                            next_invoice_advance = next_overdue_invoice_check(now, advanced);
+                            if advanced > 0 {
+                                tracing::info!(advanced, "overdue invoices advanced by trusted-time worker");
+                            }
+                        }
                         Err(error) => {
                             cleanup_failed = true;
+                            next_invoice_advance =
+                                now.saturating_add(WORKER_CLEANUP_INTERVAL_SECONDS);
                             tracing::error!(%error, "overdue invoice transition failed");
                         }
                     }
+                }
+                if now >= next_secret_purge {
                     match purge_secret_deliveries(application.repository(), now).await {
                         Ok(purged) if purged > 0 => tracing::info!(purged, "expired admin secret deliveries purged"),
                         Ok(_) => {}
@@ -1333,7 +1344,7 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
                         cleanup_failed = true;
                         tracing::error!(%error, "stale object cleanup failed");
                     }
-                    next_secret_purge = now.saturating_add(60);
+                    next_secret_purge = now.saturating_add(WORKER_CLEANUP_INTERVAL_SECONDS);
                 }
                 let iteration_ready = result.is_ok() && !cleanup_failed && dependencies_ready;
                 runtime_metrics.record_readiness(iteration_ready);
@@ -1409,12 +1420,21 @@ async fn advance_overdue_invoices(
         .await
         .map_err(|_| ApiError::Database)?;
     let rows = sqlx::query(
-        "UPDATE billing_invoices
+        "WITH candidates AS (
+             SELECT id FROM billing_invoices
+             WHERE status = 'open' AND due_at <= $1
+             ORDER BY due_at, id
+             FOR UPDATE SKIP LOCKED
+             LIMIT $2
+         )
+         UPDATE billing_invoices AS invoices
          SET status = 'overdue', updated_at = $1, row_version = row_version + 1
-         WHERE status = 'open' AND due_at <= $1
-         RETURNING id, account_id, license_id",
+         FROM candidates
+         WHERE invoices.id = candidates.id
+         RETURNING invoices.id, invoices.account_id, invoices.license_id",
     )
     .bind(now)
+    .bind(OVERDUE_INVOICE_BATCH_SIZE)
     .fetch_all(&mut *tx)
     .await
     .map_err(|_| ApiError::Database)?;
@@ -1454,6 +1474,14 @@ async fn advance_overdue_invoices(
     }
     tx.commit().await.map_err(|_| ApiError::Database)?;
     Ok(rows.len() as u64)
+}
+
+fn next_overdue_invoice_check(now: i64, advanced: u64) -> i64 {
+    if advanced >= OVERDUE_INVOICE_BATCH_SIZE as u64 {
+        now
+    } else {
+        now.saturating_add(WORKER_CLEANUP_INTERVAL_SECONDS)
+    }
 }
 
 async fn purge_secret_deliveries(
@@ -2232,7 +2260,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL"]
-    async fn overdue_invoice_transition_advances_row_version_and_writes_audit() {
+    async fn overdue_invoice_transition_is_bounded_versioned_and_audited() {
         let database_url = std::env::var("TEST_DATABASE_URL")
             .expect("TEST_DATABASE_URL is required for the PostgreSQL integration test");
         let repository = PostgresRepository::connect(&database_url, 2, Duration::from_secs(5))
@@ -2244,7 +2272,7 @@ mod tests {
         let account_id = format!("account_{suffix}");
         let license_id = format!("license_{suffix}");
         let offer_id = format!("offer_{suffix}");
-        let invoice_id = format!("invoice_{suffix}");
+        let invoice_prefix = format!("invoice_{suffix}_");
         let now = 2_000_000_000_i64;
         sqlx::query(
             "INSERT INTO accounts (id, document)
@@ -2282,51 +2310,78 @@ mod tests {
                 (id, account_id, license_id, offer_id, plan, plan_revision, seats,
                  duration_days, currency, amount_due, payment_reference, status, due_at,
                  paid_at, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, 'pro', 1, 0, 365, 'USD', 99, $5, 'open', $6,
-                     NULL, $7, $7)",
+             SELECT $1 || series::TEXT, $2, $3, $4, 'pro', 1, 0, 365, 'USD', 99,
+                    $5 || series::TEXT, 'open', $6, NULL, $7, $7
+             FROM generate_series(1, $8::BIGINT) AS series",
         )
-        .bind(&invoice_id)
+        .bind(&invoice_prefix)
         .bind(&account_id)
         .bind(&license_id)
         .bind(&offer_id)
-        .bind(format!("CNX-OVERDUE-{suffix}"))
+        .bind(format!("CNX-OVERDUE-{suffix}-"))
         .bind(now - 1)
         .bind(now - 60)
+        .bind(OVERDUE_INVOICE_BATCH_SIZE + 1)
         .execute(&repository.pool)
         .await
-        .expect("insert overdue-test invoice");
+        .expect("insert overdue-test invoices");
 
-        let advanced = advance_overdue_invoices(&repository, now)
+        let first_advanced = advance_overdue_invoices(&repository, now)
             .await
-            .expect("advance overdue invoice");
-        let invoice_state: (String, i64) =
-            sqlx::query_as("SELECT status, row_version FROM billing_invoices WHERE id = $1")
-                .bind(&invoice_id)
-                .fetch_one(&repository.pool)
-                .await
-                .expect("load advanced invoice");
-        let audit_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM audit_events
-             WHERE event_type = 'billing_invoice_overdue' AND metadata ->> 'invoice_id' = $1",
+            .expect("advance first overdue invoice batch");
+        let first_state: (i64, i64, i64) = sqlx::query_as(
+            "SELECT count(*) FILTER (WHERE status = 'overdue'),
+                    count(*) FILTER (WHERE status = 'open'),
+                    count(*) FILTER (WHERE status = 'overdue' AND row_version = 2)
+             FROM billing_invoices WHERE account_id = $1",
         )
-        .bind(&invoice_id)
+        .bind(&account_id)
         .fetch_one(&repository.pool)
         .await
-        .expect("count overdue audit events");
+        .expect("load first overdue batch state");
+        let first_audit_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM audit_events
+             WHERE event_type = 'billing_invoice_overdue' AND account_id = $1",
+        )
+        .bind(&account_id)
+        .fetch_one(&repository.pool)
+        .await
+        .expect("count first overdue audit batch");
+        let second_advanced = advance_overdue_invoices(&repository, now)
+            .await
+            .expect("advance final overdue invoice batch");
+        let final_state: (i64, i64, i64) = sqlx::query_as(
+            "SELECT count(*) FILTER (WHERE status = 'overdue'),
+                    count(*) FILTER (WHERE status = 'open'),
+                    count(*) FILTER (WHERE status = 'overdue' AND row_version = 2)
+             FROM billing_invoices WHERE account_id = $1",
+        )
+        .bind(&account_id)
+        .fetch_one(&repository.pool)
+        .await
+        .expect("load final overdue batch state");
+        let final_audit_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM audit_events
+             WHERE event_type = 'billing_invoice_overdue' AND account_id = $1",
+        )
+        .bind(&account_id)
+        .fetch_one(&repository.pool)
+        .await
+        .expect("count final overdue audit batch");
 
         sqlx::query(
             "DELETE FROM audit_events
-             WHERE event_type = 'billing_invoice_overdue' AND metadata ->> 'invoice_id' = $1",
+             WHERE event_type = 'billing_invoice_overdue' AND account_id = $1",
         )
-        .bind(&invoice_id)
+        .bind(&account_id)
         .execute(&repository.pool)
         .await
         .expect("delete overdue-test audit");
-        sqlx::query("DELETE FROM billing_invoices WHERE id = $1")
-            .bind(&invoice_id)
+        sqlx::query("DELETE FROM billing_invoices WHERE account_id = $1")
+            .bind(&account_id)
             .execute(&repository.pool)
             .await
-            .expect("delete overdue-test invoice");
+            .expect("delete overdue-test invoices");
         sqlx::query("DELETE FROM commercial_offers WHERE id = $1")
             .bind(&offer_id)
             .execute(&repository.pool)
@@ -2344,9 +2399,35 @@ mod tests {
             .expect("delete overdue-test account");
         repository.close().await;
 
-        assert_eq!(advanced, 1);
-        assert_eq!(invoice_state, ("overdue".to_owned(), 2));
-        assert_eq!(audit_count, 1);
+        assert_eq!(first_advanced, OVERDUE_INVOICE_BATCH_SIZE as u64);
+        assert_eq!(
+            first_state,
+            (OVERDUE_INVOICE_BATCH_SIZE, 1, OVERDUE_INVOICE_BATCH_SIZE)
+        );
+        assert_eq!(first_audit_count, OVERDUE_INVOICE_BATCH_SIZE);
+        assert_eq!(second_advanced, 1);
+        assert_eq!(
+            final_state,
+            (
+                OVERDUE_INVOICE_BATCH_SIZE + 1,
+                0,
+                OVERDUE_INVOICE_BATCH_SIZE + 1
+            )
+        );
+        assert_eq!(final_audit_count, OVERDUE_INVOICE_BATCH_SIZE + 1);
+    }
+
+    #[test]
+    fn overdue_invoice_backlog_rechecks_immediately_only_after_a_full_batch() {
+        let now = 2_000_000_000_i64;
+        assert_eq!(
+            next_overdue_invoice_check(now, OVERDUE_INVOICE_BATCH_SIZE as u64),
+            now
+        );
+        assert_eq!(
+            next_overdue_invoice_check(now, OVERDUE_INVOICE_BATCH_SIZE as u64 - 1),
+            now + WORKER_CLEANUP_INTERVAL_SECONDS
+        );
     }
 
     #[test]

@@ -104,10 +104,10 @@ async fn postgres_migrations_and_repository_readiness_are_exercised() {
         sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations WHERE success")
             .fetch_one(&schema_pool)
             .await
-            .expect("inspect prelaunch baseline migration");
+            .expect("inspect applied migrations");
     assert_eq!(
-        applied_migrations, 1,
-        "the complete pre-release baseline migration must be applied"
+        applied_migrations, 2,
+        "the baseline and append-only billing worker index migration must be applied"
     );
     let audit_index_definition: String =
         sqlx::query_scalar("SELECT pg_get_indexdef('audit_events_global_keyset_idx'::regclass)")
@@ -115,6 +115,13 @@ async fn postgres_migrations_and_repository_readiness_are_exercised() {
             .await
             .expect("inspect global Admin audit-listing index");
     assert!(audit_index_definition.contains("(occurred_at DESC, id DESC)"));
+    let billing_worker_index_definition: String =
+        sqlx::query_scalar("SELECT pg_get_indexdef('billing_invoices_open_due_idx'::regclass)")
+            .fetch_one(&schema_pool)
+            .await
+            .expect("inspect overdue billing worker index");
+    assert!(billing_worker_index_definition.contains("(due_at, id)"));
+    assert!(billing_worker_index_definition.contains("WHERE (status = 'open'::text)"));
     schema_pool.close().await;
 
     let initial_time = repository
