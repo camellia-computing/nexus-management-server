@@ -20,6 +20,7 @@ pub mod http;
 pub mod metrics;
 pub mod plan_catalog;
 mod request_id;
+pub mod runtime_task;
 mod secret_file;
 pub mod service;
 pub mod store;

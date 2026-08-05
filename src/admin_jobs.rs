@@ -30,6 +30,7 @@ use crate::{
     domain::{AccountState, AuditEventRecord, LicenseStatus},
     error::ApiError,
     metrics::{BackgroundOutcome, MetricsServer, RuntimeMetrics, RuntimeRole},
+    runtime_task::{join_required_task, supervise_required_task},
     store::{LicenseRepository, PostgresRepository},
 };
 
@@ -1241,7 +1242,15 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
-    let metrics_task = metrics_server.map(|server| tokio::spawn(server.serve(shutdown_rx.clone())));
+    let metrics_task = metrics_server.map(|server| {
+        let task = tokio::spawn(server.serve(shutdown_rx.clone()));
+        tokio::spawn(supervise_required_task(
+            "admin-worker metrics listener",
+            task,
+            shutdown_tx.clone(),
+            shutdown_rx.clone(),
+        ))
+    });
     let signal_tx = shutdown_tx.clone();
     let signal_task = tokio::spawn(async move {
         worker_shutdown_signal().await;
@@ -1357,10 +1366,13 @@ pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
     }
     runtime_metrics.record_readiness(false);
     let _ = shutdown_tx.send(true);
+    signal_task.abort();
     let _ = signal_task.await;
-    if let Some(task) = metrics_task {
-        task.await??;
-    }
+    let metrics_result = match metrics_task {
+        Some(task) => join_required_task("admin-worker metrics supervisor", task).await,
+        None => Ok(()),
+    };
+    metrics_result?;
     Ok(())
 }
 

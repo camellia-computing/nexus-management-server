@@ -69,6 +69,7 @@ use crate::{
     domain::{AccountState, ActivationCodeStatus, AuditEventRecord, LicenseStatus},
     error::ApiError,
     metrics::{MetricsServer, RuntimeMetrics, RuntimeRole, track_http_metrics},
+    runtime_task::{join_required_task, supervise_required_task},
     secret_file::read_secret_file,
     store::{LicenseRepository, PostgresRepository},
     team::{WorkspaceMemberStatus, WorkspaceRole},
@@ -287,7 +288,15 @@ pub async fn run_admin_web(config: AdminHttpConfig) -> Result<(), Box<dyn std::e
     let metrics_server =
         MetricsServer::from_env(config.environment, RuntimeRole::AdminWeb, runtime_metrics).await?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let metrics_task = metrics_server.map(|server| tokio::spawn(server.serve(shutdown_rx)));
+    let metrics_task = metrics_server.map(|server| {
+        let task = tokio::spawn(server.serve(shutdown_rx.clone()));
+        tokio::spawn(supervise_required_task(
+            "admin-web metrics listener",
+            task,
+            shutdown_tx.clone(),
+            shutdown_rx.clone(),
+        ))
+    });
     tracing::info!(
         bind = %config.bind,
         public_origin = %config.public_origin,
@@ -303,7 +312,7 @@ pub async fn run_admin_web(config: AdminHttpConfig) -> Result<(), Box<dyn std::e
         .await;
     let _ = shutdown_tx.send(true);
     let metrics_result = match metrics_task {
-        Some(task) => task.await?,
+        Some(task) => join_required_task("admin-web metrics supervisor", task).await,
         None => Ok(()),
     };
     serve_result?;
