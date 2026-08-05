@@ -20,7 +20,10 @@ use axum::{
 };
 use tokio::sync::watch;
 
-use crate::config::Environment;
+use crate::{
+    config::Environment,
+    limited_listener::{BoundedListener, METRICS_CONNECTION_LIMIT},
+};
 
 const STATUS_CLASSES: [&str; 6] = ["1xx", "2xx", "3xx", "4xx", "5xx", "other"];
 const BACKGROUND_OUTCOMES: [&str; 3] = ["success", "idle", "error"];
@@ -266,11 +269,14 @@ impl MetricsServer {
     }
 
     pub async fn serve(self, mut shutdown: watch::Receiver<bool>) -> std::io::Result<()> {
-        axum::serve(self.listener, metrics_router(self.metrics))
-            .with_graceful_shutdown(async move {
-                while !*shutdown.borrow() && shutdown.changed().await.is_ok() {}
-            })
-            .await
+        axum::serve(
+            BoundedListener::new(self.listener, METRICS_CONNECTION_LIMIT),
+            metrics_router(self.metrics),
+        )
+        .with_graceful_shutdown(async move {
+            while !*shutdown.borrow() && shutdown.changed().await.is_ok() {}
+        })
+        .await
     }
 }
 

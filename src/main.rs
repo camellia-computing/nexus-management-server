@@ -6,6 +6,7 @@ use camellia_nexus_management_server::{
     billing::CommercialRepository,
     cli_help::{admin_help, root_help, runtime_help, serve_help, version},
     config::{Environment, LoggingConfig},
+    limited_listener::{BoundedListener, connection_limit},
     metrics::{BackgroundOutcome, MetricsServer, RuntimeMetrics, RuntimeRole},
     router_with_metrics,
     runtime_task::{join_required_task, supervise_required_task},
@@ -421,7 +422,7 @@ async fn run(action: CliAction) -> Result<(), Box<dyn std::error::Error>> {
     let signal_tx = shutdown_tx.clone();
     let mut server_shutdown = shutdown_rx.clone();
     let serve_result = axum::serve(
-        listener,
+        BoundedListener::new(listener, connection_limit(config.http.max_in_flight)),
         router_with_metrics(
             service.clone(),
             config.cors_allowed_origins,

@@ -69,6 +69,7 @@ use crate::{
     contracts::{DeviceState, Plan},
     domain::{AccountState, ActivationCodeStatus, AuditEventRecord, LicenseStatus},
     error::ApiError,
+    limited_listener::{BoundedListener, connection_limit},
     metrics::{MetricsServer, RuntimeMetrics, RuntimeRole, track_http_metrics},
     runtime_task::{join_required_task, supervise_required_task},
     secret_file::read_secret_file,
@@ -306,12 +307,15 @@ pub async fn run_admin_web(config: AdminHttpConfig) -> Result<(), Box<dyn std::e
     );
     let signal_tx = shutdown_tx.clone();
     let server_shutdown = shutdown_rx.clone();
-    let serve_result = axum::serve(listener, router)
-        .with_graceful_shutdown(async move {
-            wait_for_admin_shutdown(server_shutdown, admin_shutdown_signal()).await;
-            let _ = signal_tx.send(true);
-        })
-        .await;
+    let serve_result = axum::serve(
+        BoundedListener::new(listener, connection_limit(config.max_in_flight)),
+        router,
+    )
+    .with_graceful_shutdown(async move {
+        wait_for_admin_shutdown(server_shutdown, admin_shutdown_signal()).await;
+        let _ = signal_tx.send(true);
+    })
+    .await;
     let _ = shutdown_tx.send(true);
     let metrics_result = match metrics_task {
         Some(task) => join_required_task("admin-web metrics supervisor", task).await,
