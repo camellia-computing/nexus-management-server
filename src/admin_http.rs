@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     convert::Infallible,
     env,
+    future::Future,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
@@ -304,9 +305,10 @@ pub async fn run_admin_web(config: AdminHttpConfig) -> Result<(), Box<dyn std::e
         "Camellia Nexus admin control plane listening"
     );
     let signal_tx = shutdown_tx.clone();
+    let server_shutdown = shutdown_rx.clone();
     let serve_result = axum::serve(listener, router)
         .with_graceful_shutdown(async move {
-            admin_shutdown_signal().await;
+            wait_for_admin_shutdown(server_shutdown, admin_shutdown_signal()).await;
             let _ = signal_tx.send(true);
         })
         .await;
@@ -337,6 +339,23 @@ async fn admin_shutdown_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+async fn wait_for_admin_shutdown(
+    mut runtime_shutdown: tokio::sync::watch::Receiver<bool>,
+    signal: impl Future<Output = ()>,
+) {
+    tokio::pin!(signal);
+    loop {
+        tokio::select! {
+            () = &mut signal => break,
+            changed = runtime_shutdown.changed() => {
+                if changed.is_err() || *runtime_shutdown.borrow() {
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -4383,6 +4402,18 @@ mod tests {
     use super::*;
     use crate::admin_jobs::BulkJobKind;
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn runtime_shutdown_stops_admin_listener_without_an_os_signal() {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let waiting = tokio::spawn(wait_for_admin_shutdown(shutdown_rx, std::future::pending()));
+
+        shutdown_tx.send(true).expect("shutdown receiver");
+        tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("runtime shutdown must stop the listener wait")
+            .expect("shutdown waiter");
+    }
 
     fn write_admin_asset_fixture(directory: &Path) {
         std::fs::create_dir_all(directory.join(ADMIN_IMMUTABLE_ASSET_DIRECTORY)).unwrap();
