@@ -6,8 +6,10 @@ use camellia_nexus_management_server::{
     billing::CommercialRepository,
     cli_help::{admin_help, root_help, runtime_help, serve_help, version},
     config::{Environment, LoggingConfig},
+    limited_listener::{BoundedListener, connection_limit},
     metrics::{BackgroundOutcome, MetricsServer, RuntimeMetrics, RuntimeRole},
     router_with_metrics,
+    runtime_task::{join_required_task, supervise_required_task},
     team::{PostgresTeamRepository, TeamRepository},
     webhooks::{
         PostgresWebhookRepository, WebhookDispatcherConfig, WebhookKeyring, WebhookTimeAuthority,
@@ -351,12 +353,35 @@ async fn run(action: CliAction) -> Result<(), Box<dyn std::error::Error>> {
         "Camellia Nexus management server listening"
     );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let metrics_task = metrics_server.map(|server| tokio::spawn(server.serve(shutdown_rx.clone())));
-    let maintenance = tokio::spawn(maintenance_loop(
-        service.clone(),
-        config.maintenance_interval,
-        config.cleanup_batch_size,
-        runtime_metrics.clone(),
+    let metrics_task = metrics_server.map(|server| {
+        let task = tokio::spawn(server.serve(shutdown_rx.clone()));
+        tokio::spawn(supervise_required_task(
+            "public metrics listener",
+            task,
+            shutdown_tx.clone(),
+            shutdown_rx.clone(),
+        ))
+    });
+    let maintenance_service = service.clone();
+    let maintenance_interval = config.maintenance_interval;
+    let cleanup_batch_size = config.cleanup_batch_size;
+    let maintenance_metrics = runtime_metrics.clone();
+    let maintenance_shutdown = shutdown_rx.clone();
+    let maintenance_task = tokio::spawn(async move {
+        maintenance_loop(
+            maintenance_service,
+            maintenance_interval,
+            cleanup_batch_size,
+            maintenance_metrics,
+            maintenance_shutdown,
+        )
+        .await;
+        Ok::<(), std::io::Error>(())
+    });
+    let maintenance = tokio::spawn(supervise_required_task(
+        "public maintenance",
+        maintenance_task,
+        shutdown_tx.clone(),
         shutdown_rx.clone(),
     ));
     let webhook_worker = webhook_repository.map(|repository| {
@@ -397,7 +422,7 @@ async fn run(action: CliAction) -> Result<(), Box<dyn std::error::Error>> {
     let signal_tx = shutdown_tx.clone();
     let mut server_shutdown = shutdown_rx.clone();
     let serve_result = axum::serve(
-        listener,
+        BoundedListener::new(listener, connection_limit(config.http.max_in_flight)),
         router_with_metrics(
             service.clone(),
             config.cors_allowed_origins,
@@ -419,9 +444,9 @@ async fn run(action: CliAction) -> Result<(), Box<dyn std::error::Error>> {
     })
     .await;
     let _ = shutdown_tx.send(true);
-    let _ = maintenance.await;
+    let maintenance_result = join_required_task("public maintenance supervisor", maintenance).await;
     let metrics_result = match metrics_task {
-        Some(task) => task.await?,
+        Some(task) => join_required_task("public metrics supervisor", task).await,
         None => Ok(()),
     };
     let webhook_result = match webhook_worker {
@@ -435,6 +460,7 @@ async fn run(action: CliAction) -> Result<(), Box<dyn std::error::Error>> {
     };
     service.shutdown().await;
     serve_result?;
+    maintenance_result?;
     metrics_result?;
     webhook_result?;
     Ok(())

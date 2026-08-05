@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     convert::Infallible,
     env,
+    future::Future,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
@@ -68,7 +69,9 @@ use crate::{
     contracts::{DeviceState, Plan},
     domain::{AccountState, ActivationCodeStatus, AuditEventRecord, LicenseStatus},
     error::ApiError,
+    limited_listener::{BoundedListener, connection_limit},
     metrics::{MetricsServer, RuntimeMetrics, RuntimeRole, track_http_metrics},
+    runtime_task::{join_required_task, supervise_required_task},
     secret_file::read_secret_file,
     store::{LicenseRepository, PostgresRepository},
     team::{WorkspaceMemberStatus, WorkspaceRole},
@@ -241,7 +244,6 @@ pub async fn run_admin_web(config: AdminHttpConfig) -> Result<(), Box<dyn std::e
     let evidence_scanner =
         EvidenceScanner::from_env(config.environment == Environment::Production)?;
     evidence_scanner.readiness_check().await?;
-    runtime_metrics.record_readiness(true);
     let application = AdminApplication::new(
         repository.clone(),
         time_max_forward_jump_seconds_from_env().map_err(|error| error.to_string())?,
@@ -252,6 +254,8 @@ pub async fn run_admin_web(config: AdminHttpConfig) -> Result<(), Box<dyn std::e
         keyring.clone(),
         ObjectStorageConfig::from_env()?,
     )?;
+    storage.readiness_check().await?;
+    runtime_metrics.record_readiness(true);
     let auth = AdminAuthService::new(application.clone(), keyring.clone())?;
     let identity = AdminIdentityService::new(application.clone(), keyring.clone());
     let jobs = AdminJobService::new(application.clone());
@@ -286,7 +290,15 @@ pub async fn run_admin_web(config: AdminHttpConfig) -> Result<(), Box<dyn std::e
     let metrics_server =
         MetricsServer::from_env(config.environment, RuntimeRole::AdminWeb, runtime_metrics).await?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let metrics_task = metrics_server.map(|server| tokio::spawn(server.serve(shutdown_rx)));
+    let metrics_task = metrics_server.map(|server| {
+        let task = tokio::spawn(server.serve(shutdown_rx.clone()));
+        tokio::spawn(supervise_required_task(
+            "admin-web metrics listener",
+            task,
+            shutdown_tx.clone(),
+            shutdown_rx.clone(),
+        ))
+    });
     tracing::info!(
         bind = %config.bind,
         public_origin = %config.public_origin,
@@ -294,15 +306,19 @@ pub async fn run_admin_web(config: AdminHttpConfig) -> Result<(), Box<dyn std::e
         "Camellia Nexus admin control plane listening"
     );
     let signal_tx = shutdown_tx.clone();
-    let serve_result = axum::serve(listener, router)
-        .with_graceful_shutdown(async move {
-            admin_shutdown_signal().await;
-            let _ = signal_tx.send(true);
-        })
-        .await;
+    let server_shutdown = shutdown_rx.clone();
+    let serve_result = axum::serve(
+        BoundedListener::new(listener, connection_limit(config.max_in_flight)),
+        router,
+    )
+    .with_graceful_shutdown(async move {
+        wait_for_admin_shutdown(server_shutdown, admin_shutdown_signal()).await;
+        let _ = signal_tx.send(true);
+    })
+    .await;
     let _ = shutdown_tx.send(true);
     let metrics_result = match metrics_task {
-        Some(task) => task.await?,
+        Some(task) => join_required_task("admin-web metrics supervisor", task).await,
         None => Ok(()),
     };
     serve_result?;
@@ -327,6 +343,23 @@ async fn admin_shutdown_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+async fn wait_for_admin_shutdown(
+    mut runtime_shutdown: tokio::sync::watch::Receiver<bool>,
+    signal: impl Future<Output = ()>,
+) {
+    tokio::pin!(signal);
+    loop {
+        tokio::select! {
+            () = &mut signal => break,
+            changed = runtime_shutdown.changed() => {
+                if changed.is_err() || *runtime_shutdown.borrow() {
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -458,7 +491,11 @@ fn admin_router(
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(middleware::from_fn(crate::request_id::sanitize_request_id))
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &Request<Body>| {
+                crate::request_id::http_request_span(tracing::Level::DEBUG, request)
+            }),
+        )
         .with_state(state)
 }
 
@@ -594,6 +631,7 @@ async fn admin_readyz(State(state): State<AdminHttpState>) -> Response<Body> {
                 .readiness_check(state.application.repository())
                 .await
                 .is_ok()
+            && state.storage.readiness_check().await.is_ok()
             && state.evidence_scanner.readiness_check().await.is_ok()
             && state.application.trusted_now().await.is_ok()
     })
@@ -2614,7 +2652,11 @@ async fn upload_payment_evidence(
         Ok(response) => response,
         Err(error) => {
             if let Err(cleanup_error) = state.storage.delete(&object.id).await {
-                tracing::error!(object_id = object.id, %cleanup_error, "orphaned payment evidence cleanup failed");
+                tracing::error!(
+                    object_ref = %crate::crypto::stable_log_reference(&object.id),
+                    %cleanup_error,
+                    "orphaned payment evidence cleanup failed"
+                );
             }
             return Err(error);
         }
@@ -2625,7 +2667,11 @@ async fn upload_payment_evidence(
         .is_some_and(|id| id != object.id)
         && let Err(cleanup_error) = state.storage.delete(&object.id).await
     {
-        tracing::error!(object_id = object.id, %cleanup_error, "orphaned payment evidence cleanup failed");
+        tracing::error!(
+            object_ref = %crate::crypto::stable_log_reference(&object.id),
+            %cleanup_error,
+            "orphaned payment evidence cleanup failed"
+        );
     }
     payment_evidence_upload_response(response)
 }
@@ -4368,6 +4414,18 @@ mod tests {
     use super::*;
     use crate::admin_jobs::BulkJobKind;
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn runtime_shutdown_stops_admin_listener_without_an_os_signal() {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let waiting = tokio::spawn(wait_for_admin_shutdown(shutdown_rx, std::future::pending()));
+
+        shutdown_tx.send(true).expect("shutdown receiver");
+        tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("runtime shutdown must stop the listener wait")
+            .expect("shutdown waiter");
+    }
 
     fn write_admin_asset_fixture(directory: &Path) {
         std::fs::create_dir_all(directory.join(ADMIN_IMMUTABLE_ASSET_DIRECTORY)).unwrap();

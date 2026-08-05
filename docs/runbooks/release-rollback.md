@@ -11,7 +11,9 @@ GitHub Release. Mutable aliases such as `latest` are discovery aids and are neve
 2. Verify the digest's Cosign workflow identity and OCI `version`, `revision`, and `source` labels.
    Confirm the vulnerability and runtime checks in the formal release completed successfully.
 3. Record the current and candidate digests. Create and verify a joint recovery point covering
-   PostgreSQL, object storage, all keyrings, entitlement recovery material, and migration checksums.
+   PostgreSQL, object storage, all keyrings, entitlement recovery material, and migration checksums
+   using the writer-quiesced procedure in `docs/runbooks/backup-restore.md`. Do not accept separately
+   timed online database and external-object snapshots as one recovery point.
 4. Validate the candidate configuration without printing secrets. Confirm file ownership/mode,
    HTTPS origins, key IDs, scanner and object-store reachability, database capacity, trusted UTC
    time, ingress policy, and both rollback and abort criteria.

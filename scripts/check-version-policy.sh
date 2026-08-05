@@ -294,9 +294,17 @@ done
 
 policy=docs/dependency-management.md
 [[ -f "$policy" ]] || fail 'dependency policy documentation is missing'
-for exception in 'pnpm 11' cookie '@napi-rs/wasm-runtime' 'TypeScript 7' workflow_run; do
+for exception in 'pnpm 11' cookie '@napi-rs/wasm-runtime' 'TypeScript 7' RUSTSEC-2026-0235 workflow_run; do
   grep -q "$exception" "$policy" || fail "dependency exception is undocumented: $exception"
 done
+grep -Fq 'cargo audit --deny yanked --ignore RUSTSEC-2026-0235' .github/workflows/ci.yml ||
+  fail 'Cargo audit must deny yanked packages and ignore only the registered unreachable rkyv advisory'
+audit_ignore_count="$(
+  grep -RhoE -- '--ignore[[:space:]]+RUSTSEC-[0-9]{4}-[0-9]{4}' .github/workflows |
+    wc -l |
+    tr -d '[:space:]'
+)"
+[[ "$audit_ignore_count" == 1 ]] || fail 'exactly one registered Rust advisory ignore is permitted'
 
 dependabot=.github/dependabot.yml
 [[ -f "$dependabot" ]] || fail 'Dependabot configuration is missing'

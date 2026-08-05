@@ -241,7 +241,7 @@ addresses, customer data, credentials, or machine-local procedures here.
 - Every commercial/security-sensitive success and denial writes a structured audit event with trusted
   time, canonical actor/tenant/resource/action/reason, row version, request ID, and safe metadata.
 - `/healthz` is process liveness without dependency access. `/readyz` checks repository, required
-  schema, key material as applicable, malware-scanner availability, and trusted time with a bounded
+  schema, key material as applicable, object-storage availability, malware-scanner availability, and trusted time with a bounded
   deadline and no-store response. The Admin Worker operations listener exposes its current
   dependency/iteration state at `/readyz`; container health must not use its liveness-only endpoint.
 - Every production runtime role exposes low-cardinality Prometheus text metrics on its separately

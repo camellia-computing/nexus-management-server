@@ -58,6 +58,15 @@ pub struct ManualPaymentMethod {
     pub updated_at: i64,
 }
 
+/// Maximum number of immutable entries retained in either customer-visible billing catalog.
+///
+/// Offers and manual payment methods are returned as arrays by the public billing summary and
+/// the existing Admin/CLI contracts, so their lifecycle must impose a finite bound.
+pub const BILLING_CATALOG_MAX_ENTRIES: usize = 256;
+
+const COMMERCIAL_OFFER_CATALOG_LOCK_KEY: i64 = 0x434E_584F_4646_4552;
+const PAYMENT_METHOD_CATALOG_LOCK_KEY: i64 = 0x434E_584D_4554_4844;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InvoiceStatus {
@@ -341,6 +350,7 @@ impl PostgresRepository {
             tx.commit().await.map_err(|_| ApiError::Database)?;
             return Ok(response);
         }
+        ensure_commercial_offer_capacity(&mut tx).await?;
         sqlx::query(
             "INSERT INTO commercial_offers
                 (id, plan, plan_revision, duration_days, currency, base_amount, seat_amount,
@@ -388,12 +398,17 @@ impl PostgresRepository {
                     name_en, name_zh, active, created_at, updated_at
              FROM commercial_offers
              WHERE NOT $1 OR active
-             ORDER BY plan, duration_days, id",
+             ORDER BY plan, duration_days, id
+             LIMIT $2",
         )
         .bind(active_only)
+        .bind(catalog_query_limit())
         .fetch_all(&self.pool)
         .await
         .map_err(|_| ApiError::Database)?;
+        if rows.len() > BILLING_CATALOG_MAX_ENTRIES {
+            return Err(ApiError::Database);
+        }
         rows.into_iter().map(row_offer).collect()
     }
 
@@ -425,6 +440,7 @@ impl PostgresRepository {
             tx.commit().await.map_err(|_| ApiError::Database)?;
             return Ok(response);
         }
+        ensure_payment_method_capacity(&mut tx).await?;
         sqlx::query(
             "INSERT INTO manual_payment_methods
                 (id, name_en, name_zh, instructions_en, instructions_zh, settlement_asset,
@@ -473,12 +489,17 @@ impl PostgresRepository {
                     destination_hint, active, created_at, updated_at
              FROM manual_payment_methods
              WHERE NOT $1 OR active
-             ORDER BY id",
+             ORDER BY id
+             LIMIT $2",
         )
         .bind(active_only)
+        .bind(catalog_query_limit())
         .fetch_all(&self.pool)
         .await
         .map_err(|_| ApiError::Database)?;
+        if rows.len() > BILLING_CATALOG_MAX_ENTRIES {
+            return Err(ApiError::Database);
+        }
         rows.into_iter().map(row_payment_method).collect()
     }
 
@@ -1050,7 +1071,50 @@ fn validate_admin_context(
     Ok(())
 }
 
+const fn catalog_query_limit() -> i64 {
+    BILLING_CATALOG_MAX_ENTRIES as i64 + 1
+}
+
+async fn ensure_commercial_offer_capacity(
+    tx: &mut Transaction<'_, Postgres>,
+) -> AdminAppResult<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(COMMERCIAL_OFFER_CATALOG_LOCK_KEY)
+        .execute(&mut **tx)
+        .await
+        .map_err(|_| ApiError::Database)?;
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM commercial_offers")
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|_| ApiError::Database)?;
+    if count >= BILLING_CATALOG_MAX_ENTRIES as i64 {
+        return Err(AdminAppError::Validation(format!(
+            "commercial offer catalog limit of {BILLING_CATALOG_MAX_ENTRIES} entries has been reached"
+        )));
+    }
+    Ok(())
+}
+
+async fn ensure_payment_method_capacity(tx: &mut Transaction<'_, Postgres>) -> AdminAppResult<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(PAYMENT_METHOD_CATALOG_LOCK_KEY)
+        .execute(&mut **tx)
+        .await
+        .map_err(|_| ApiError::Database)?;
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM manual_payment_methods")
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|_| ApiError::Database)?;
+    if count >= BILLING_CATALOG_MAX_ENTRIES as i64 {
+        return Err(AdminAppError::Validation(format!(
+            "manual payment method catalog limit of {BILLING_CATALOG_MAX_ENTRIES} entries has been reached"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_offer(offer: &CommercialOffer) -> Result<()> {
+    validate_offer_response_bound(offer)?;
     if offer.row_version != 1
         || !matches!(offer.plan, Plan::Pro | Plan::Team)
         || offer.plan_revision != CURRENT_PLAN_REVISION
@@ -1076,6 +1140,13 @@ fn validate_offer(offer: &CommercialOffer) -> Result<()> {
     Ok(())
 }
 
+fn validate_offer_response_bound(offer: &CommercialOffer) -> Result<()> {
+    bounded(&offer.id, 128)?;
+    bounded(&offer.name_en, 256)?;
+    bounded(&offer.name_zh, 256)?;
+    Ok(())
+}
+
 fn billing_admin_database_error(error: sqlx::Error) -> AdminAppError {
     if error
         .as_database_error()
@@ -1088,17 +1159,20 @@ fn billing_admin_database_error(error: sqlx::Error) -> AdminAppError {
 }
 
 fn validate_method(method: &ManualPaymentMethod) -> Result<()> {
-    if method.row_version != 1
-        || method.id.trim().is_empty()
-        || method.name_en.trim().is_empty()
-        || method.name_zh.trim().is_empty()
-        || method.instructions_en.trim().is_empty()
-        || method.instructions_zh.trim().is_empty()
-        || method.destination_hint.trim().is_empty()
-        || !valid_asset(&method.settlement_asset)
-    {
+    validate_method_response_bound(method)?;
+    if method.row_version != 1 || !valid_asset(&method.settlement_asset) {
         return Err(ApiError::InvalidRequest);
     }
+    Ok(())
+}
+
+fn validate_method_response_bound(method: &ManualPaymentMethod) -> Result<()> {
+    bounded(&method.id, 128)?;
+    bounded(&method.name_en, 256)?;
+    bounded(&method.name_zh, 256)?;
+    bounded(&method.instructions_en, 4_000)?;
+    bounded(&method.instructions_zh, 4_000)?;
+    bounded(&method.destination_hint, 512)?;
     Ok(())
 }
 
@@ -1716,7 +1790,7 @@ async fn update_payment_claim(
 }
 
 fn row_offer(row: PgRow) -> Result<CommercialOffer> {
-    Ok(CommercialOffer {
+    let offer = CommercialOffer {
         id: row.try_get("id").map_err(|_| ApiError::Database)?,
         row_version: positive_u64(&row, "row_version")?,
         plan: parse_plan(
@@ -1733,11 +1807,13 @@ fn row_offer(row: PgRow) -> Result<CommercialOffer> {
         active: row.try_get("active").map_err(|_| ApiError::Database)?,
         created_at: row.try_get("created_at").map_err(|_| ApiError::Database)?,
         updated_at: row.try_get("updated_at").map_err(|_| ApiError::Database)?,
-    })
+    };
+    validate_offer_response_bound(&offer).map_err(|_| ApiError::Database)?;
+    Ok(offer)
 }
 
 fn row_payment_method(row: PgRow) -> Result<ManualPaymentMethod> {
-    Ok(ManualPaymentMethod {
+    let method = ManualPaymentMethod {
         id: row.try_get("id").map_err(|_| ApiError::Database)?,
         row_version: positive_u64(&row, "row_version")?,
         name_en: row.try_get("name_en").map_err(|_| ApiError::Database)?,
@@ -1757,7 +1833,9 @@ fn row_payment_method(row: PgRow) -> Result<ManualPaymentMethod> {
         active: row.try_get("active").map_err(|_| ApiError::Database)?,
         created_at: row.try_get("created_at").map_err(|_| ApiError::Database)?,
         updated_at: row.try_get("updated_at").map_err(|_| ApiError::Database)?,
-    })
+    };
+    validate_method_response_bound(&method).map_err(|_| ApiError::Database)?;
+    Ok(method)
 }
 
 fn row_invoice(row: PgRow) -> Result<BillingInvoice> {
@@ -2056,6 +2134,47 @@ mod tests {
     }
 
     #[test]
+    fn billing_catalog_entries_enforce_response_size_bounds() {
+        let offer = CommercialOffer {
+            id: "offer_test".into(),
+            row_version: 1,
+            plan: Plan::Pro,
+            plan_revision: CURRENT_PLAN_REVISION,
+            duration_days: 365,
+            currency: "USD".into(),
+            base_amount: Decimal::new(9_900, 2),
+            seat_amount: None,
+            name_en: "Pro yearly".into(),
+            name_zh: "Pro yearly".into(),
+            active: true,
+            created_at: 1,
+            updated_at: 1,
+        };
+        assert!(validate_offer(&offer).is_ok());
+        let mut invalid_offer = offer;
+        invalid_offer.name_en = "x".repeat(257);
+        assert!(validate_offer(&invalid_offer).is_err());
+
+        let method = ManualPaymentMethod {
+            id: "method_test".into(),
+            row_version: 1,
+            name_en: "Bank transfer".into(),
+            name_zh: "Bank transfer".into(),
+            instructions_en: "Use the invoice reference".into(),
+            instructions_zh: "Use the invoice reference".into(),
+            settlement_asset: "USD".into(),
+            destination_hint: "Account ending 1234".into(),
+            active: true,
+            created_at: 1,
+            updated_at: 1,
+        };
+        assert!(validate_method(&method).is_ok());
+        let mut invalid_method = method;
+        invalid_method.instructions_en = "x".repeat(4_001);
+        assert!(validate_method(&invalid_method).is_err());
+    }
+
+    #[test]
     fn amount_override_is_only_valid_for_approval() {
         assert!(validate_payment_review_override(PaymentReviewDecision::Approve, true).is_ok());
         assert!(validate_payment_review_override(PaymentReviewDecision::Approve, false).is_ok());
@@ -2245,6 +2364,285 @@ mod tests {
             &changed_metadata,
             Some("account_test")
         ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "requires TEST_DATABASE_URL"]
+    async fn postgres_billing_catalog_listing_is_bounded() {
+        use std::time::Duration;
+
+        let database_url = std::env::var("TEST_DATABASE_URL")
+            .expect("TEST_DATABASE_URL is required for the PostgreSQL integration test");
+        let repository = PostgresRepository::connect(&database_url, 4, Duration::from_secs(5))
+            .await
+            .expect("connect PostgreSQL");
+        repository.migrate().await.expect("run migrations");
+
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let prefix = format!("billing_catalog_bound_offer_{suffix}_");
+        let pattern = format!("{prefix}%");
+        let method_prefix = format!("billing_catalog_bound_method_{suffix}_");
+        let method_pattern = format!("{method_prefix}%");
+        sqlx::query("DELETE FROM commercial_offers WHERE id LIKE $1")
+            .bind(&pattern)
+            .execute(&repository.pool)
+            .await
+            .expect("remove stale catalog-bound offers");
+        sqlx::query(
+            "INSERT INTO commercial_offers
+                (id, plan, plan_revision, duration_days, currency, base_amount, seat_amount,
+                 name_en, name_zh, active, created_at, updated_at)
+             SELECT $1 || series::TEXT, 'pro', 1, 365, 'USD', 99, NULL,
+                    'Catalog bound test', 'Catalog bound test', true, 2_000_000_000, 2_000_000_000
+             FROM generate_series(1, $2) AS series",
+        )
+        .bind(&prefix)
+        .bind(i64::try_from(BILLING_CATALOG_MAX_ENTRIES + 1).expect("catalog bound fits in i64"))
+        .execute(&repository.pool)
+        .await
+        .expect("insert catalog-bound offers");
+        sqlx::query(
+            "INSERT INTO manual_payment_methods
+                (id, name_en, name_zh, instructions_en, instructions_zh, settlement_asset,
+                 destination_hint, active, created_at, updated_at)
+             SELECT $1 || series::TEXT, 'Catalog bound test', 'Catalog bound test',
+                    'Catalog bound test', 'Catalog bound test', 'USD', 'Catalog bound test',
+                    true, 2_000_000_000, 2_000_000_000
+             FROM generate_series(1, $2) AS series",
+        )
+        .bind(&method_prefix)
+        .bind(i64::try_from(BILLING_CATALOG_MAX_ENTRIES + 1).expect("catalog bound fits in i64"))
+        .execute(&repository.pool)
+        .await
+        .expect("insert catalog-bound payment methods");
+        let offer_result = repository.commercial_offers(false).await;
+        let method_result = repository.manual_payment_methods(false).await;
+        sqlx::query("DELETE FROM commercial_offers WHERE id LIKE $1")
+            .bind(&pattern)
+            .execute(&repository.pool)
+            .await
+            .expect("clean catalog-bound offers");
+        sqlx::query("DELETE FROM manual_payment_methods WHERE id LIKE $1")
+            .bind(&method_pattern)
+            .execute(&repository.pool)
+            .await
+            .expect("clean catalog-bound payment methods");
+        assert!(
+            offer_result.is_err(),
+            "offer catalog listing must fail closed above its bound"
+        );
+        assert!(
+            method_result.is_err(),
+            "payment-method catalog listing must fail closed above its bound"
+        );
+
+        sqlx::query(
+            "INSERT INTO commercial_offers
+                (id, plan, plan_revision, duration_days, currency, base_amount, seat_amount,
+                 name_en, name_zh, active, created_at, updated_at)
+             VALUES ($1, 'pro', 1, 365, 'USD', 99, NULL, $2, 'Catalog bound test',
+                     true, 2_000_000_000, 2_000_000_000)",
+        )
+        .bind(format!("{prefix}oversized"))
+        .bind("x".repeat(257))
+        .execute(&repository.pool)
+        .await
+        .expect("insert oversized catalog offer");
+        sqlx::query(
+            "INSERT INTO manual_payment_methods
+                (id, name_en, name_zh, instructions_en, instructions_zh, settlement_asset,
+                 destination_hint, active, created_at, updated_at)
+             VALUES ($1, 'Catalog bound test', 'Catalog bound test', $2, 'Catalog bound test',
+                     'USD', 'Catalog bound test', true, 2_000_000_000, 2_000_000_000)",
+        )
+        .bind(format!("{method_prefix}oversized"))
+        .bind("x".repeat(4_001))
+        .execute(&repository.pool)
+        .await
+        .expect("insert oversized catalog payment method");
+        let oversized_offer_result = repository.commercial_offers(false).await;
+        let oversized_method_result = repository.manual_payment_methods(false).await;
+        sqlx::query("DELETE FROM commercial_offers WHERE id LIKE $1")
+            .bind(&pattern)
+            .execute(&repository.pool)
+            .await
+            .expect("clean oversized catalog offer");
+        sqlx::query("DELETE FROM manual_payment_methods WHERE id LIKE $1")
+            .bind(&method_pattern)
+            .execute(&repository.pool)
+            .await
+            .expect("clean oversized catalog payment method");
+        assert!(
+            oversized_offer_result.is_err(),
+            "oversized offer rows must fail closed before serialization"
+        );
+        assert!(
+            oversized_method_result.is_err(),
+            "oversized payment-method rows must fail closed before serialization"
+        );
+
+        let existing_offer_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM commercial_offers")
+                .fetch_one(&repository.pool)
+                .await
+                .expect("count existing offers");
+        let existing_method_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM manual_payment_methods")
+                .fetch_one(&repository.pool)
+                .await
+                .expect("count existing payment methods");
+        let offer_fill_count = BILLING_CATALOG_MAX_ENTRIES as i64 - 1 - existing_offer_count;
+        let method_fill_count = BILLING_CATALOG_MAX_ENTRIES as i64 - 1 - existing_method_count;
+        assert!(
+            offer_fill_count >= 0 && method_fill_count >= 0,
+            "the test database must begin below the catalog limit"
+        );
+        sqlx::query(
+            "INSERT INTO commercial_offers
+                (id, plan, plan_revision, duration_days, currency, base_amount, seat_amount,
+                 name_en, name_zh, active, created_at, updated_at)
+             SELECT $1 || series::TEXT, 'pro', 1, 365, 'USD', 99, NULL,
+                    'Catalog capacity test', 'Catalog capacity test', true,
+                    2_000_000_000, 2_000_000_000
+             FROM generate_series(1, $2) AS series",
+        )
+        .bind(&prefix)
+        .bind(offer_fill_count)
+        .execute(&repository.pool)
+        .await
+        .expect("fill offer catalog to capacity");
+        sqlx::query(
+            "INSERT INTO manual_payment_methods
+                (id, name_en, name_zh, instructions_en, instructions_zh, settlement_asset,
+                 destination_hint, active, created_at, updated_at)
+             SELECT $1 || series::TEXT, 'Catalog capacity test', 'Catalog capacity test',
+                    'Catalog capacity test', 'Catalog capacity test', 'USD',
+                    'Catalog capacity test', true, 2_000_000_000, 2_000_000_000
+             FROM generate_series(1, $2) AS series",
+        )
+        .bind(&method_prefix)
+        .bind(method_fill_count)
+        .execute(&repository.pool)
+        .await
+        .expect("fill payment-method catalog to capacity");
+        let first_offer = CommercialOffer {
+            id: format!("{prefix}extra_a"),
+            row_version: 1,
+            plan: Plan::Pro,
+            plan_revision: CURRENT_PLAN_REVISION,
+            duration_days: 365,
+            currency: "USD".into(),
+            base_amount: Decimal::new(9_900, 2),
+            seat_amount: None,
+            name_en: "Catalog capacity test".into(),
+            name_zh: "Catalog capacity test".into(),
+            active: true,
+            created_at: 2_000_000_001,
+            updated_at: 2_000_000_001,
+        };
+        let mut second_offer = first_offer.clone();
+        second_offer.id = format!("{prefix}extra_b");
+        let (first_offer_result, second_offer_result) = tokio::join!(
+            repository.create_commercial_offer(
+                &first_offer,
+                "billing-catalog-test",
+                "verify catalog capacity",
+                None,
+                None,
+            ),
+            repository.create_commercial_offer(
+                &second_offer,
+                "billing-catalog-test",
+                "verify catalog capacity",
+                None,
+                None,
+            )
+        );
+        let first_method = ManualPaymentMethod {
+            id: format!("{method_prefix}extra_a"),
+            row_version: 1,
+            name_en: "Catalog capacity test".into(),
+            name_zh: "Catalog capacity test".into(),
+            instructions_en: "Catalog capacity test".into(),
+            instructions_zh: "Catalog capacity test".into(),
+            settlement_asset: "USD".into(),
+            destination_hint: "Catalog capacity test".into(),
+            active: true,
+            created_at: 2_000_000_001,
+            updated_at: 2_000_000_001,
+        };
+        let mut second_method = first_method.clone();
+        second_method.id = format!("{method_prefix}extra_b");
+        let (first_method_result, second_method_result) = tokio::join!(
+            repository.create_manual_payment_method(
+                &first_method,
+                "billing-catalog-test",
+                "verify catalog capacity",
+                None,
+                None,
+            ),
+            repository.create_manual_payment_method(
+                &second_method,
+                "billing-catalog-test",
+                "verify catalog capacity",
+                None,
+                None,
+            )
+        );
+        sqlx::query(
+            "DELETE FROM audit_events
+             WHERE metadata->>'offer_id' LIKE $1 OR metadata->>'payment_method_id' LIKE $2",
+        )
+        .bind(&pattern)
+        .bind(&method_pattern)
+        .execute(&repository.pool)
+        .await
+        .expect("clean catalog capacity audits");
+        sqlx::query("DELETE FROM commercial_offers WHERE id LIKE $1")
+            .bind(&pattern)
+            .execute(&repository.pool)
+            .await
+            .expect("clean catalog capacity offers");
+        sqlx::query("DELETE FROM manual_payment_methods WHERE id LIKE $1")
+            .bind(&method_pattern)
+            .execute(&repository.pool)
+            .await
+            .expect("clean catalog capacity payment methods");
+        let offer_results = [first_offer_result, second_offer_result];
+        assert_eq!(
+            offer_results.iter().filter(|result| result.is_ok()).count(),
+            1
+        );
+        assert_eq!(
+            offer_results
+                .iter()
+                .filter(|result| matches!(
+                    result,
+                    Err(AdminAppError::Validation(message))
+                        if message.contains("catalog limit of 256")
+                ))
+                .count(),
+            1
+        );
+        let method_results = [first_method_result, second_method_result];
+        assert_eq!(
+            method_results
+                .iter()
+                .filter(|result| result.is_ok())
+                .count(),
+            1
+        );
+        assert_eq!(
+            method_results
+                .iter()
+                .filter(|result| matches!(
+                    result,
+                    Err(AdminAppError::Validation(message))
+                        if message.contains("catalog limit of 256")
+                ))
+                .count(),
+            1
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

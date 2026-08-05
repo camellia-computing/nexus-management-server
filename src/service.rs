@@ -27,7 +27,7 @@ use crate::{
     },
     crypto::{
         EntitlementSigner, canonicalize_activation_code, pkce_s256_challenge, random_id,
-        random_secret, sha256_hex, verify_device_proof,
+        random_secret, sha256_hex, stable_log_reference, verify_device_proof,
     },
     domain::{
         AUTHORIZATION_RESULT_RETRY_SECONDS, Account, ActivationCodeRecord, ActivationCodeStatus,
@@ -1678,9 +1678,9 @@ impl LicenseService {
         }
         tracing::warn!(
             rate_limit_scope = scope,
-            account_id = audit.account_id.unwrap_or(""),
-            license_id = audit.license_id.unwrap_or(""),
-            device_id = audit.device_id.unwrap_or(""),
+            account_ref = %stable_log_reference(audit.account_id.unwrap_or("")),
+            license_ref = %stable_log_reference(audit.license_id.unwrap_or("")),
+            device_ref = %stable_log_reference(audit.device_id.unwrap_or("")),
             "license service rate limit denied request"
         );
         let audit_key = format!("{scope}:{key}");
@@ -1759,7 +1759,11 @@ impl LicenseService {
             .touch_device_last_seen(device_id, now, DEVICE_LAST_SEEN_WRITE_INTERVAL_SECONDS)
             .await
         {
-            tracing::warn!(%error, %device_id, "could not update device last-seen time");
+            tracing::warn!(
+                %error,
+                device_ref = %stable_log_reference(device_id),
+                "could not update device last-seen time"
+            );
         }
     }
 
@@ -1876,9 +1880,9 @@ impl LicenseService {
         tracing::info!(
             audit_event = %event.event_type,
             outcome = %event.outcome,
-            account_id = event.account_id.as_deref().unwrap_or(""),
-            license_id = event.license_id.as_deref().unwrap_or(""),
-            device_id = event.device_id.as_deref().unwrap_or(""),
+            account_ref = %stable_log_reference(event.account_id.as_deref().unwrap_or("")),
+            license_ref = %stable_log_reference(event.license_id.as_deref().unwrap_or("")),
+            device_ref = %stable_log_reference(event.device_id.as_deref().unwrap_or("")),
             reason_code = event.reason_code.as_deref().unwrap_or(""),
             "license audit event"
         );
@@ -1988,7 +1992,10 @@ impl LicenseService {
             .query_pairs_mut()
             .append_pair("code", &code)
             .append_pair("state", &request.state);
-        tracing::info!(account_id = %grant.account_id, "authorization code issued");
+        tracing::info!(
+            account_ref = %stable_log_reference(&grant.account_id),
+            "authorization code issued"
+        );
         Self::log_audit(&success_audit);
         Ok(redirect.to_string())
     }
@@ -2210,8 +2217,8 @@ impl LicenseService {
                 Err(error) => {
                     if matches!(&error, ApiError::ActivationLimitReached) {
                         tracing::warn!(
-                            account_id = %account.id,
-                            license_id = %license.id,
+                            account_ref = %stable_log_reference(&account.id),
+                            license_ref = %stable_log_reference(&license.id),
                             max_devices = license.effective_policy()?.device_limit,
                             "device registration denied by activation limit"
                         );
@@ -2296,8 +2303,8 @@ impl LicenseService {
                         )
                         .await?;
                     tracing::info!(
-                        account_id = %account.id,
-                        device_id = %existing.metadata.device_id,
+                        account_ref = %stable_log_reference(&account.id),
+                        device_ref = %stable_log_reference(&existing.metadata.device_id),
                         platform = %existing.metadata.platform,
                         "active device session issued"
                     );
@@ -2367,8 +2374,8 @@ impl LicenseService {
             )
             .await?;
         tracing::info!(
-            account_id = %account.id,
-            device_id = %device.metadata.device_id,
+            account_ref = %stable_log_reference(&account.id),
+            device_ref = %stable_log_reference(&device.metadata.device_id),
             platform = %device.metadata.platform,
             device_state = ?device.state,
             "device registered"
@@ -2544,8 +2551,8 @@ impl LicenseService {
             }
         };
         tracing::info!(
-            account_id = %device.account_id,
-            device_id = %device.metadata.device_id,
+            account_ref = %stable_log_reference(&device.account_id),
+            device_ref = %stable_log_reference(&device.metadata.device_id),
             "device activation confirmed"
         );
         Self::log_audit(&success_audit);
@@ -2632,10 +2639,10 @@ impl LicenseService {
             .rotate_session(&session_record, now, true, success_audit.clone())
             .await?;
         tracing::info!(
-            account_id = %device.account_id,
-            device_id = %device.metadata.device_id,
-            license_id = %license.id,
-            token_id = %claims.token_id,
+            account_ref = %stable_log_reference(&device.account_id),
+            device_ref = %stable_log_reference(&device.metadata.device_id),
+            license_ref = %stable_log_reference(&license.id),
+            token_ref = %stable_log_reference(&claims.token_id),
             device_state = ?device.state,
             "activation proof issued"
         );
@@ -2686,7 +2693,7 @@ impl LicenseService {
             && requested_scope != ACTIVATION_VERIFY_SCOPE
         {
             tracing::warn!(
-                device_id = %device.metadata.device_id,
+                device_ref = %stable_log_reference(&device.metadata.device_id),
                 requested_scope = %requested_scope,
                 "pending activation device requested a non-activation challenge"
             );
@@ -2725,8 +2732,8 @@ impl LicenseService {
             })
             .await?;
         tracing::debug!(
-            device_id = %device_id,
-            challenge_id = %challenge.challenge_id,
+            device_ref = %stable_log_reference(&device_id),
+            challenge_ref = %stable_log_reference(&challenge.challenge_id),
             "device challenge issued"
         );
         self.record_audit(
@@ -2828,10 +2835,10 @@ impl LicenseService {
             .rotate_session(&session_record, now, false, success_audit.clone())
             .await?;
         tracing::info!(
-            account_id = %device.account_id,
-            device_id = %device.metadata.device_id,
-            license_id = %license.id,
-            token_id = %claims.token_id,
+            account_ref = %stable_log_reference(&device.account_id),
+            device_ref = %stable_log_reference(&device.metadata.device_id),
+            license_ref = %stable_log_reference(&license.id),
+            token_ref = %stable_log_reference(&claims.token_id),
             "entitlement refreshed"
         );
         Self::log_audit(&success_audit);
@@ -2903,9 +2910,9 @@ impl LicenseService {
             .await?;
         if let Some(device) = device {
             tracing::debug!(
-                device_id = %device.metadata.device_id,
+                device_ref = %stable_log_reference(&device.metadata.device_id),
                 device_state = ?device.state,
-                challenge_id = %challenge.challenge_id,
+                challenge_ref = %stable_log_reference(&challenge.challenge_id),
                 "session recovery challenge issued for an existing device"
             );
             self.record_anonymous_audit_sample(
@@ -2929,8 +2936,8 @@ impl LicenseService {
             .await;
         } else {
             tracing::debug!(
-                device_id_hash = %sha256_hex(device_id),
-                challenge_id = %challenge.challenge_id,
+                device_ref = %stable_log_reference(device_id),
+                challenge_ref = %stable_log_reference(&challenge.challenge_id),
                 "persisted synthetic session recovery challenge issued for an unknown device"
             );
             self.record_anonymous_audit_sample(
@@ -3129,9 +3136,9 @@ impl LicenseService {
             }
         };
         tracing::info!(
-            account_id = %device.account_id,
-            device_id = %device.metadata.device_id,
-            license_id = %license.id,
+            account_ref = %stable_log_reference(&device.account_id),
+            device_ref = %stable_log_reference(&device.metadata.device_id),
+            license_ref = %stable_log_reference(&license.id),
             "license session recovered with device proof"
         );
         Self::log_audit(&success_audit);
@@ -3150,8 +3157,8 @@ impl LicenseService {
         reason_code: &'static str,
     ) {
         tracing::warn!(
-            device_id_hash = %sha256_hex(device_id),
-            challenge_id_hash = %sha256_hex(challenge_id),
+            device_ref = %stable_log_reference(device_id),
+            challenge_ref = %stable_log_reference(challenge_id),
             reason_code,
             "unverified session recovery request denied"
         );
@@ -3475,8 +3482,8 @@ impl LicenseService {
             .ok_or(ApiError::DeviceDenied)?;
         if target.account_id != current.account_id || target.license_id != current.license_id {
             tracing::warn!(
-                requester_device_id = %current.metadata.device_id,
-                target_device_id = %device_id,
+                requester_device_ref = %stable_log_reference(&current.metadata.device_id),
+                target_device_ref = %stable_log_reference(device_id),
                 "cross-license device removal denied"
             );
             self.record_audit(
@@ -3525,15 +3532,15 @@ impl LicenseService {
             .await?;
         if removed {
             tracing::info!(
-                requester_device_id = %current.metadata.device_id,
-                target_device_id = %device_id,
+                requester_device_ref = %stable_log_reference(&current.metadata.device_id),
+                target_device_ref = %stable_log_reference(device_id),
                 "device removed"
             );
             Self::log_audit(&audit);
         } else {
             tracing::debug!(
-                requester_device_id = %current.metadata.device_id,
-                target_device_id = %device_id,
+                requester_device_ref = %stable_log_reference(&current.metadata.device_id),
+                target_device_ref = %stable_log_reference(device_id),
                 "device was already removed"
             );
         }
@@ -3620,8 +3627,8 @@ impl LicenseService {
                     return Ok(());
                 };
                 tracing::info!(
-                    account_id = %record.account_id,
-                    device_id = %record.device_id,
+                    account_ref = %stable_log_reference(&record.account_id),
+                    device_ref = %stable_log_reference(&record.device_id),
                     active = record.active,
                     "license session logged out"
                 );
@@ -3903,8 +3910,8 @@ impl LicenseService {
                     let mut retry = record;
                     retry.active = true;
                     tracing::info!(
-                        device_id = %retry.device_id,
-                        family_id = %retry.family_id,
+                        device_ref = %stable_log_reference(&retry.device_id),
+                        family_ref = %stable_log_reference(&retry.family_id),
                         "accepting a device-proven refresh retry inside the rotation grace window"
                     );
                     return Ok(retry);
@@ -3913,8 +3920,8 @@ impl LicenseService {
                     .revoke_session_family(&record.family_id)
                     .await?;
                 tracing::warn!(
-                    device_id = %record.device_id,
-                    family_id = %record.family_id,
+                    device_ref = %stable_log_reference(&record.device_id),
+                    family_ref = %stable_log_reference(&record.family_id),
                     "refresh session reuse detected; session family revoked"
                 );
                 self.record_audit(
@@ -4541,6 +4548,19 @@ pub(crate) mod tests {
 
     pub const TEST_ACTIVATION_CODE: &str = "test-activation-code";
     pub const TEST_PKCE_VERIFIER: &str = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
+
+    #[test]
+    fn log_references_are_stable_distinct_and_redacted() {
+        let first_raw = "account-customer-alpha";
+        let second_raw = "account-customer-beta";
+        let first = stable_log_reference(first_raw);
+
+        assert_eq!(first, stable_log_reference(first_raw));
+        assert_ne!(first, stable_log_reference(second_raw));
+        assert!(first.starts_with("sha256:"));
+        assert!(!first.contains(first_raw));
+        assert_eq!(stable_log_reference(""), "");
+    }
 
     fn test_signing_key() -> SigningKey {
         SigningKey::try_generate().expect("test signing key entropy")

@@ -180,6 +180,14 @@ pub fn sha256_hex(value: &str) -> String {
         .collect()
 }
 
+pub(crate) fn stable_log_reference(value: &str) -> String {
+    if value.is_empty() {
+        String::new()
+    } else {
+        format!("sha256:{}", sha256_hex(value))
+    }
+}
+
 pub fn pkce_s256_challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }

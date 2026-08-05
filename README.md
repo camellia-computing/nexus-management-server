@@ -74,7 +74,7 @@ CAMELLIA_NEXUS_CLEANUP_BATCH_SIZE=1000
 - PostgreSQL 使用固定到不可变摘要的 `postgres:18-alpine`，数据卷挂载到 `/var/lib/postgresql`
 - 服务默认只暴露到本机地址，生产入口应由反向代理提供 HTTPS
 - `docker-compose.yml` 显式关闭应用启动迁移；先执行受控的一次性迁移，再启动或滚动替换服务
-- 启动后使用 `GET /healthz` 与 `GET /readyz` 检查服务状态；容器内可执行 `camellia-nexus-management-server healthcheck http://127.0.0.1:<port>/readyz`，并给 SIGTERM 至少 30 秒退出窗口
+- 启动后使用 `GET /healthz` 与 `GET /readyz` 检查服务状态；容器内可执行 `camellia-nexus-management-server healthcheck http://127.0.0.1:<port>/readyz`。示例为 public/Worker 保留 30 秒、为默认 180 秒请求上限的 Admin Web 保留 210 秒 SIGTERM 退出窗口
 
 ### 数据库迁移策略
 
@@ -165,7 +165,7 @@ CAMELLIA_NEXUS_CLAMAV_ADDRESS=clamav:3310
 
 转发来源地址默认不受信任。需要记录客户端地址时，反向代理必须先删除外部传入的 `X-Forwarded-For` 与 `X-Camellia-Proxy-Auth`，再写入已验证地址和 32–256 个可见 ASCII 字符的共享密钥；服务端通过 `CAMELLIA_NEXUS_ADMIN_FORWARDED_FOR_SECRET_PATH` 从有界常规文件读取同一密钥并以常量时间校验。未通过认证或不是合法 IP 的转发值不会进入审计记录。管理 origin 只能包含 HTTP(S) scheme 与 authority，不得包含用户名或密码；生产环境必须使用 HTTPS，且不应直接暴露到互联网。
 
-对象存储提供三档统一接口并始终执行对象级 XChaCha20-Poly1305 加密、SHA-256 完整性验证和配额控制：`filesystem` 适合单机小规模，`database` 通过 1 MiB PostgreSQL 分块支持中等规模，`s3` 适合大规模与多副本部署。外部后端写入先持久化 staging 元数据；即使上传响应不确定，worker 也会通过有界 HEAD/GET、密文长度、解密与摘要对账后完成提交或清理，绝不丢失唯一恢复记录。外部读取在分配内存前验证数据库与对象元数据，并在流式读取中执行绝对大小上限。付款证据只接受签名匹配的 PNG、JPEG、PDF，先进入隔离区；生产环境强制启用 ClamAV，扫描不可用时保持隔离并拒绝付款通过。
+对象存储提供三档统一接口并始终执行对象级 XChaCha20-Poly1305 加密、SHA-256 完整性验证和配额控制：`filesystem` 适合单机小规模，`database` 通过 1 MiB PostgreSQL 分块支持中等规模，`s3` 适合大规模与多副本部署。外部后端写入先持久化 staging 元数据；即使上传响应不确定，worker 也会通过有界 HEAD/GET、密文长度、解密与摘要对账后完成提交或清理，绝不丢失唯一恢复记录。外部读取在分配内存前验证数据库与对象元数据，并在流式读取中执行绝对大小上限。Admin Web 与 Worker 的启动和持续 readiness 会对保留前缀执行有界只读列举；S3 身份除对象读写/删除外还必须具备受前缀约束的 bucket 列举权限。付款证据只接受签名匹配的 PNG、JPEG、PDF，先进入隔离区；生产环境强制启用 ClamAV，扫描不可用时保持隔离并拒绝付款通过。
 
 ### API
 
@@ -330,7 +330,7 @@ camellia-nexus-management-server admin operator recover-owner owner \
 
 `--confirm` 必须与规范化后的目标用户名完全一致。此命令会使现有认证材料立即失效，每次新令牌只在当前输出中显示；若交付失败，可对尚无认证因子的 `pending` Owner 重新执行，新令牌会立即作废此前令牌。命令应只在受控终端执行并安全交付。
 
-人工账单先从报价快照创建 Invoice，再由用户提交付款信息，最后由运营人员审核。只有 `billing payment approve` 的数据库事务成功后才会更新套餐、期限与 license epoch；`submitted`、`needs_information` 或 `rejected` 均不会授予权益。商业报价仅用于 Pro 与 Team。Invoice 席位必须与报价套餐一致：Team 必须显式指定 3 至 10,000 席，Pro 必须为零；服务端会拒绝矛盾输入，不会静默更正商业数据。账单和付款声明采用默认 50、最大 100 的不透明键集分页；Admin UI 可继续加载，CLI 返回带 `nextCursor` 的页面并接受 `--cursor`、`--page-size` 与 `--query`。
+人工账单先从报价快照创建 Invoice，再由用户提交付款信息，最后由运营人员审核。只有 `billing payment approve` 的数据库事务成功后才会更新套餐、期限与 license epoch；`submitted`、`needs_information` 或 `rejected` 均不会授予权益。商业报价仅用于 Pro 与 Team。Invoice 席位必须与报价套餐一致：Team 必须显式指定 3 至 10,000 席，Pro 必须为零；服务端会拒绝矛盾输入，不会静默更正商业数据。账单和付款声明采用默认 50、最大 100 的不透明键集分页；Admin UI 可继续加载，CLI 返回带 `nextCursor` 的页面并接受 `--cursor`、`--page-size` 与 `--query`。报价和人工付款方式是小型不可变目录，每类最多保留 256 项；并发创建第 257 项会被拒绝，因此现有 Admin、CLI 和客户账单摘要中的数组响应始终有界。
 
 ```bash
 camellia-nexus-management-server admin billing offer create pro-yearly --plan pro --duration-days 365 --currency USD --amount 99 --name-en "Pro yearly" --name-zh "专业版年付" --actor finance_001 --reason "2026 catalog"
@@ -430,12 +430,13 @@ entitlement 签发材料应由部署环境统一管理，轮换策略由发布�
 
 运行与维护配置：
 
-- `GET /healthz` 是不访问外部依赖的进程存活检查；公开/Admin `GET /readyz` 最多等待 2 秒检查 repository、必需 schema、所需密钥、Admin 恶意软件扫描器与持久时间权威，并在依赖不可用时返回 `503 not ready` 与 `Cache-Control: no-store`
+- `GET /healthz` 是不访问外部依赖的进程存活检查；公开/Admin `GET /readyz` 最多等待 2 秒检查 repository、必需 schema、所需密钥、Admin 对象存储、恶意软件扫描器与持久时间权威，并在依赖不可用时返回 `503 not ready` 与 `Cache-Control: no-store`
 - `CAMELLIA_NEXUS_HTTP_REQUEST_TIMEOUT_SECONDS`（默认 `15`）限制业务请求总时间；`CAMELLIA_NEXUS_HTTP_MAX_IN_FLIGHT`（默认 `256`）限制进程内并发，超时返回 504，过载返回 503，并附带 `Retry-After: 1`
-- `CAMELLIA_NEXUS_ADMIN_REQUEST_TIMEOUT_SECONDS`（默认 `180`）与 `CAMELLIA_NEXUS_ADMIN_MAX_IN_FLIGHT`（默认 `64`）只限制 `admin-web` 的 `/api/v1`；健康检查和静态资源不占用该预算。超时返回机器可读的 504，过载返回 503，二者均附带 `Retry-After: 1`
+- `CAMELLIA_NEXUS_ADMIN_REQUEST_TIMEOUT_SECONDS`（默认 `180`）与 `CAMELLIA_NEXUS_ADMIN_MAX_IN_FLIGHT`（默认 `64`）只限制 `admin-web` 的 `/api/v1`；健康检查和静态资源不占用该预算。超时返回机器可读的 504，过载返回 503，二者均附带 `Retry-After: 1`。Admin Web 的平台停止宽限必须大于请求超时并保留排空余量；示例为默认值使用 210 秒，调整请求超时时必须同步调整该宽限
+- 每个 public 和 Admin HTTP listener 都在 accept 层设置连接上限，数值为对应 `*_MAX_IN_FLIGHT` 的四倍（默认分别为 `1024` 和 `256`）；metrics listener 固定最多 `64` 个连接。连接许可覆盖慢 header、keep-alive 与 HTTP/2 连接 task，并在连接结束或优雅停机时释放；它独立于业务/API 请求预算
 - `CAMELLIA_NEXUS_DATABASE_ACQUIRE_TIMEOUT_SECONDS`（默认 `5`）限制等待 PostgreSQL 连接的时间；`CAMELLIA_NEXUS_DATABASE_MAX_CONNECTIONS`（默认 `8`）限制连接池大小。`serve`、`admin-web` 与 `admin-worker` 对无效值或零值均直接拒绝启动，不会静默使用默认值
 - 每个生产常驻角色都必须设置 `CAMELLIA_NEXUS_METRICS_BIND`。独立运维监听器提供 `/healthz` 与
-  Prometheus 文本 `/metrics`；Admin Worker 还提供持续反映数据库、密钥、扫描器与工作循环状态的
+  Prometheus 文本 `/metrics`；Admin Worker 还提供持续反映数据库、密钥、对象存储、扫描器与工作循环状态的
   `/readyz`，其容器健康检查必须使用该端点。默认应绑定回环地址。非回环地址还必须显式设置
   `CAMELLIA_NEXUS_METRICS_ALLOW_NON_LOOPBACK=true` 并由私有防火墙/入口隔离。`serve`、`admin-web` 与
   `admin-worker` 使用不同端口；指标只含有界的角色、状态码类别与结果标签，绝不包含租户、设备、URL、
@@ -447,7 +448,7 @@ entitlement 签发材料应由部署环境统一管理，轮换策略由发布�
 - 应用内匿名全局 bucket 只是集群熔断器，不是来源级防滥用边界。生产 HTTPS 入口必须在转发 `/oauth/*` 和 `/v1/*` 前按经过验证的客户端源地址执行 WAF/限流，并丢弃外部伪造的 forwarded-IP 头；已认证设备流量应使用独立策略，避免匿名攻击耗尽正常刷新容量。重复匿名拒绝的持久审计按事件/原因采样，完整请求计数应由入口指标和访问日志保存
 - `CAMELLIA_NEXUS_MAINTENANCE_INTERVAL_SECONDS`（默认 `3600`）与 `CAMELLIA_NEXUS_CLEANUP_BATCH_SIZE`（默认 `1000`）控制清理任务。任务启动后立即运行一次，随后按间隔执行；过期 challenge 和 OAuth authorization code 保留 1 小时，refresh session 在 family 的绝对到期时间后再保留 7 天用于重放检测，rate-limit bucket 保留 2 小时，然后按表分批删除
 - 清理任务不会删除账号、授权、设备、数据库授权码或审计事件；这些记录需按业务与合规政策保留
-- 服务在 SIGTERM 或 Ctrl-C 后停止接收新连接、等待在途请求完成、停止维护任务并关闭 repository；Webhook Worker 最多用 20 秒排空已认领交付，超时后中止剩余任务并保留可重试状态。部署平台的停止宽限必须同时覆盖请求超时和 Worker 排空；示例 compose 与 systemd 配置使用 30 秒
+- 服务在 SIGTERM 或 Ctrl-C 后停止接收新连接、等待在途请求完成、停止维护任务并关闭 repository；Webhook Worker 最多用 20 秒排空已认领交付，超时后中止剩余任务并保留可重试状态。部署平台的停止宽限必须覆盖相应角色的最长排空：示例 compose 与 systemd 为 public/Worker 使用 30 秒，为默认请求超时 180 秒的 Admin Web 使用 210 秒
 
 ### 本地验证
 
@@ -564,7 +565,7 @@ Container deployment notes:
   the migration command applies the explicit per-table grants
 - The service example binds only to localhost; production ingress should terminate HTTPS through a reverse proxy
 - `docker-compose.yml` explicitly disables application-startup migrations; run a controlled one-shot migration before starting or rolling the service
-- Use `GET /healthz` and `GET /readyz` after startup. Inside the container, run `camellia-nexus-management-server healthcheck http://127.0.0.1:<port>/readyz`. Give SIGTERM at least a 30-second stop window.
+- Use `GET /healthz` and `GET /readyz` after startup. Inside the container, run `camellia-nexus-management-server healthcheck http://127.0.0.1:<port>/readyz`. The sample gives public/Worker roles a 30-second SIGTERM stop window and Admin Web a 210-second window for its default 180-second request limit.
 
 ### Database migration policy
 
@@ -655,7 +656,7 @@ CAMELLIA_NEXUS_CLAMAV_ADDRESS=clamav:3310
 
 Forwarded addresses are ignored by default. To record them, the proxy must strip incoming `X-Forwarded-For` and `X-Camellia-Proxy-Auth`, inject a verified address and a shared secret of 32–256 visible ASCII characters, and the server must read that same secret from the bounded regular file named by `CAMELLIA_NEXUS_ADMIN_FORWARDED_FOR_SECRET_PATH`. Unauthenticated or malformed values never enter audit records. The Admin origin may contain only an HTTP(S) scheme and authority, never a username or password. It must use HTTPS in production and should remain private.
 
-Object storage provides encrypted `filesystem`, PostgreSQL `database` (1 MiB chunks), and `s3` backends for small, medium and large deployments. Every object has a random data key, XChaCha20-Poly1305 encryption, SHA-256 validation and quota enforcement. External writes persist staging metadata first; even when an upload response is ambiguous, the worker retains the unique recovery record and uses bounded HEAD/GET, ciphertext length, decryption and digest checks to finalize or remove it. External reads validate database and object metadata before allocation and enforce an absolute cap while streaming. Payment evidence is signature-checked, quarantined and scanned; production refuses to start with scanning disabled, and payment approval fails closed unless every attachment is clean.
+Object storage provides encrypted `filesystem`, PostgreSQL `database` (1 MiB chunks), and `s3` backends for small, medium and large deployments. Every object has a random data key, XChaCha20-Poly1305 encryption, SHA-256 validation and quota enforcement. External writes persist staging metadata first; even when an upload response is ambiguous, the worker retains the unique recovery record and uses bounded HEAD/GET, ciphertext length, decryption and digest checks to finalize or remove it. External reads validate database and object metadata before allocation and enforce an absolute cap while streaming. Admin Web and Worker startup and continuing readiness perform a bounded read-only listing under a reserved prefix; an S3 identity therefore needs prefix-scoped bucket-list permission in addition to object read/write/delete access. Payment evidence is signature-checked, quarantined and scanned; production refuses to start with scanning disabled, and payment approval fails closed unless every attachment is clean.
 
 ### API
 
@@ -831,7 +832,7 @@ camellia-nexus-management-server admin operator recover-owner owner \
 
 `--confirm` must exactly match the normalized target username. The command immediately invalidates existing authentication material and shows each new reset token only in that invocation. If delivery fails, it may be run again for a pending Owner with no authentication factors; the replacement immediately invalidates every earlier token. Run it only from a controlled terminal and deliver the token securely.
 
-Manual billing creates an invoice from an immutable offer snapshot, accepts customer payment evidence, and then requires an operator review. Only a committed `billing payment approve` transaction changes the plan, term, and license epoch; submitted, needs-information, and rejected claims grant no entitlement. Commercial offers apply only to Pro and Team. Invoice seats must match the offer plan: Team requires an explicit quantity from 3 through 10,000, while Pro requires zero. The service rejects contradictory input instead of silently rewriting commercial data. Invoice and payment-claim lists use opaque keyset pages of 50 by default and 100 at most. The Admin UI loads subsequent pages explicitly; the CLI returns `nextCursor` and accepts `--cursor`, `--page-size`, and `--query`.
+Manual billing creates an invoice from an immutable offer snapshot, accepts customer payment evidence, and then requires an operator review. Only a committed `billing payment approve` transaction changes the plan, term, and license epoch; submitted, needs-information, and rejected claims grant no entitlement. Commercial offers apply only to Pro and Team. Invoice seats must match the offer plan: Team requires an explicit quantity from 3 through 10,000, while Pro requires zero. The service rejects contradictory input instead of silently rewriting commercial data. Invoice and payment-claim lists use opaque keyset pages of 50 by default and 100 at most. The Admin UI loads subsequent pages explicitly; the CLI returns `nextCursor` and accepts `--cursor`, `--page-size`, and `--query`. Offers and manual payment methods are small immutable catalogs capped at 256 entries each; concurrent creation of a 257th entry is rejected, keeping the existing Admin, CLI, and customer billing-summary array responses bounded.
 
 ```bash
 camellia-nexus-management-server admin billing offer create pro-yearly --plan pro --duration-days 365 --currency USD --amount 99 --name-en "Pro yearly" --name-zh "专业版年付" --actor finance_001 --reason "2026 catalog"
@@ -931,13 +932,14 @@ Logging configuration:
 
 Runtime and maintenance configuration:
 
-- `GET /healthz` is process liveness and does not touch external dependencies. Public/Admin `GET /readyz` waits at most two seconds for the repository, required schema, required key material, Admin malware scanner, and persistent-time checks, returning `503 not ready` with `Cache-Control: no-store` when a dependency is unavailable
+- `GET /healthz` is process liveness and does not touch external dependencies. Public/Admin `GET /readyz` waits at most two seconds for the repository, required schema, required key material, Admin object storage, malware scanner, and persistent-time checks, returning `503 not ready` with `Cache-Control: no-store` when a dependency is unavailable
 - `CAMELLIA_NEXUS_HTTP_REQUEST_TIMEOUT_SECONDS` (default `15`) bounds total business-request time. `CAMELLIA_NEXUS_HTTP_MAX_IN_FLIGHT` (default `256`) bounds per-process concurrency. Timeouts return 504; overload returns 503; both include `Retry-After: 1`
-- `CAMELLIA_NEXUS_ADMIN_REQUEST_TIMEOUT_SECONDS` (default `180`) and `CAMELLIA_NEXUS_ADMIN_MAX_IN_FLIGHT` (default `64`) apply only to `admin-web` `/api/v1`; health checks and static assets do not consume this budget. Timeout is a machine-readable 504 and overload a 503, both with `Retry-After: 1`
+- `CAMELLIA_NEXUS_ADMIN_REQUEST_TIMEOUT_SECONDS` (default `180`) and `CAMELLIA_NEXUS_ADMIN_MAX_IN_FLIGHT` (default `64`) apply only to `admin-web` `/api/v1`; health checks and static assets do not consume this budget. Timeout is a machine-readable 504 and overload a 503, both with `Retry-After: 1`. The Admin Web platform stop grace must exceed the request timeout and retain drain margin; the sample uses 210 seconds for the default, and changing the request timeout requires changing that grace with it
+- Every public and Admin HTTP listener also enforces an accept-level connection cap equal to four times its corresponding `*_MAX_IN_FLIGHT` value (defaults `1024` and `256`); each metrics listener is capped at `64` connections. Permits cover slow headers, keep-alive, and HTTP/2 connection tasks and are released when the connection ends or graceful shutdown drains it; this budget is independent of business/API request concurrency
 - `CAMELLIA_NEXUS_DATABASE_ACQUIRE_TIMEOUT_SECONDS` (default `5`) bounds PostgreSQL pool waits, while `CAMELLIA_NEXUS_DATABASE_MAX_CONNECTIONS` (default `8`) bounds pool size. `serve`, `admin-web`, and `admin-worker` all reject invalid or zero values at startup instead of silently using defaults
 - `CAMELLIA_NEXUS_METRICS_BIND` is required for every production runtime role. The separate operations
   listener serves `/healthz` and Prometheus text at `/metrics`; the Admin Worker additionally exposes
-  `/readyz` with its continuously observed database, keyring, scanner, and iteration state, and its
+  `/readyz` with its continuously observed database, keyring, object-store, scanner, and iteration state, and its
   container health check must use that endpoint. Loopback is the safe default;
   a non-loopback address also requires `CAMELLIA_NEXUS_METRICS_ALLOW_NON_LOOPBACK=true` and a private
   firewall/ingress. Use separate ports for `serve`, `admin-web`, and `admin-worker`. Metrics expose
@@ -950,7 +952,7 @@ Runtime and maintenance configuration:
 - The in-application anonymous global bucket is a cluster circuit breaker, not a source-level abuse boundary. Production HTTPS ingress must apply WAF/per-source limits to `/oauth/*` and `/v1/*` using a verified client address and must discard externally supplied forwarding headers before setting its own. Authenticated device traffic should use a separate policy so anonymous abuse cannot consume normal refresh capacity. Durable audits for repeated anonymous denials are sampled by event/reason; ingress metrics and access logs retain full request counts
 - `CAMELLIA_NEXUS_MAINTENANCE_INTERVAL_SECONDS` (default `3600`) and `CAMELLIA_NEXUS_CLEANUP_BATCH_SIZE` (default `1000`) control cleanup. It runs once immediately after startup and then at the configured interval. Expired challenges and OAuth authorization codes are retained for one hour; refresh sessions are retained until seven days after the session family's absolute expiry for replay detection; rate-limit buckets are retained for two hours; records are then deleted in per-table batches
 - Cleanup never deletes accounts, licenses, devices, database activation codes or audit events; retain those records according to business and compliance policy
-- On SIGTERM or Ctrl-C, the service stops accepting new connections, drains in-flight requests, stops maintenance and closes the repository. The Webhook worker has up to 20 seconds to drain claimed deliveries, then aborts remaining tasks without marking them successful. The platform stop grace must cover both request timeout and worker drain; the sample compose and systemd configurations use 30 seconds
+- On SIGTERM or Ctrl-C, the service stops accepting new connections, drains in-flight requests, stops maintenance and closes the repository. The Webhook worker has up to 20 seconds to drain claimed deliveries, then aborts remaining tasks without marking them successful. Platform stop grace must cover the longest drain for each role: the sample Compose and systemd configurations use 30 seconds for public/Worker and 210 seconds for Admin Web with its default 180-second request timeout
 
 ### Local verification
 

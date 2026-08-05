@@ -10,18 +10,30 @@ configurations, webhook secrets, and evidence permanently unreadable.
 
 Record the UTC timestamp, PostgreSQL WAL/backup identifier, object-store snapshot/version,
 all three keyring versions and checksums, entitlement public key IDs, immutable application image
-digest, and `_sqlx_migrations` version/checksum list. Store the manifest and encrypted key material
-in a separately controlled backup system. Never place keys or backup credentials in this repository.
+digest, `_sqlx_migrations` version/checksum list, and evidence that every application writer was
+quiesced for the complete joint-snapshot window. Store the manifest and encrypted key material in a
+separately controlled backup system. Never place keys or backup credentials in this repository.
 
 ## Backup procedure
 
-1. Confirm `/readyz` for public and administrator roles and verify the worker is processing jobs.
-2. Capture a PostgreSQL base backup and retain WAL for point-in-time recovery. Snapshot the object
-   backend at the same logical recovery point.
-3. Export all three complete keyrings, including retired keys still referenced by rows, and the
-   entitlement signing recovery material through the organization secret-custody process.
-4. Record image digests and migration checksums in the recovery-point manifest.
-5. Restore the backup into an isolated environment and run the verification below before marking it
+1. Confirm `/readyz` for public and administrator roles, verify the worker is processing jobs, and
+   record the exact image digest and current migration checksums before entering maintenance.
+2. Gate public and administrator ingress, stop `admin-worker`, `admin-web`, and `serve`, then verify
+   that the runtime database roles have no remaining sessions or active transactions. Keep every
+   application writer stopped until both PostgreSQL and object snapshots plus the key export finish.
+   A worker lease left by shutdown is recoverable; an application transaction or object upload still
+   in progress is not an acceptable snapshot boundary.
+3. While writers remain quiesced, capture a PostgreSQL base backup and retain WAL for point-in-time
+   recovery, then snapshot/version the external object backend. The current application has no
+   cross-system snapshot transaction, so an online database backup and a separately timed external
+   object snapshot must not be labelled as one recovery point.
+4. Export all three complete keyrings, including retired keys still referenced by rows, and the
+   entitlement signing recovery material through the organization secret-custody process. Prevent
+   key rotation until this export and the two data snapshots are complete.
+5. Record the writer-quiescence evidence, snapshot identifiers, image digest, key checksums, and
+   migration checksums in the recovery-point manifest. Restart only the same recorded digest, restore
+   ingress in readiness order, and confirm the worker resumes any expired lease safely.
+6. Restore the backup into an isolated environment and run the verification below before marking it
    usable. A backup that has not passed restore verification is not a production backup.
 
 ## Restore and verification

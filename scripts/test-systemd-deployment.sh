@@ -51,14 +51,14 @@ assert_contains "$admin_web" 'SupplementaryGroups=camellia-nexus-admin'
 assert_contains "$admin_worker" 'SupplementaryGroups=camellia-nexus-admin'
 
 for entry in \
-  "$public|serve|public-api.env" \
-  "$admin_web|admin-web|admin-web.env" \
-  "$admin_worker|admin-worker|admin-worker.env"; do
-  IFS='|' read -r file role environment_file <<<"$entry"
+  "$public|serve|public-api.env|30s" \
+  "$admin_web|admin-web|admin-web.env|210s" \
+  "$admin_worker|admin-worker|admin-worker.env|30s"; do
+  IFS='|' read -r file role environment_file stop_timeout <<<"$entry"
   assert_contains "$file" "Requires=camellia-nexus-management-migrate.service"
   assert_contains "$file" "ExecStart=/usr/local/bin/camellia-nexus-management-server $role"
   assert_contains "$file" "EnvironmentFile=/etc/camellia-nexus/$environment_file"
-  assert_contains "$file" 'TimeoutStopSec=30s'
+  assert_contains "$file" "TimeoutStopSec=$stop_timeout"
 done
 
 assert_contains "$repo_root/deploy/management-common.env.example" 'CAMELLIA_NEXUS_DATABASE_MIGRATE=false'

@@ -87,6 +87,7 @@ services:
   admin-web:
     <<: *service
     command: ["admin-web"]
+    stop_grace_period: 210s
     depends_on:
       migrate:
         condition: service_completed_successfully

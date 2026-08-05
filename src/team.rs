@@ -426,6 +426,7 @@ impl TeamRepository for PostgresTeamRepository {
             account_id,
             device_id,
             &[WorkspaceRole::Owner, WorkspaceRole::Admin],
+            now,
         )
         .await?;
         if request.role == WorkspaceRole::Admin && actor.role != WorkspaceRole::Owner {
@@ -639,6 +640,7 @@ impl TeamRepository for PostgresTeamRepository {
             tx.commit().await.map_err(|_| ApiError::Database)?;
             return Ok(response);
         }
+        require_team_device_authority_tx(&mut tx, account_id, device_id, now).await?;
         let row = sqlx::query(
             "SELECT invitations.id AS invitation_id, members.id, members.email, members.display_name,
                     members.role, members.status, members.row_version, members.created_at,
@@ -928,6 +930,7 @@ impl TeamRepository for PostgresTeamRepository {
             account_id,
             device_id,
             &[WorkspaceRole::Owner, WorkspaceRole::Admin],
+            now,
         )
         .await?;
         if let Some(response) = claim_team_operation::<WorkspaceMember>(
@@ -1065,6 +1068,7 @@ impl TeamRepository for PostgresTeamRepository {
                 WorkspaceRole::Viewer,
                 WorkspaceRole::Auditor,
             ],
+            now,
         )
         .await?;
         let request_hash =
@@ -1136,6 +1140,7 @@ impl TeamRepository for PostgresTeamRepository {
             account_id,
             device_id,
             &[WorkspaceRole::Owner, WorkspaceRole::Admin],
+            now,
         )
         .await?;
         if let Some(response) = claim_team_operation::<MemberDeviceEnrollment>(
@@ -1237,6 +1242,7 @@ impl TeamRepository for PostgresTeamRepository {
             tx.commit().await.map_err(|_| ApiError::Database)?;
             return Ok(response);
         }
+        require_team_device_authority_tx(&mut tx, account_id, device_id, now).await?;
         let row: Option<(String, String, i64, Option<i64>, Option<i64>)> = sqlx::query_as(
             "SELECT id, member_id, expires_at, consumed_at, revoked_at
              FROM member_device_enrollments
@@ -1510,6 +1516,7 @@ impl TeamRepository for PostgresTeamRepository {
                 WorkspaceRole::Viewer,
                 WorkspaceRole::Auditor,
             ],
+            now,
         )
         .await?;
         if member.role == WorkspaceRole::Owner {
@@ -1611,6 +1618,7 @@ impl TeamRepository for PostgresTeamRepository {
             account_id,
             device_id,
             &[WorkspaceRole::Owner, WorkspaceRole::Admin],
+            now,
         )
         .await?;
         if owner.role != WorkspaceRole::Owner {
@@ -2069,7 +2077,7 @@ async fn account_plan_tx(
 ) -> Result<(Plan, u32)> {
     let row = sqlx::query(
         "SELECT plan, plan_revision, purchased_seats FROM licenses
-         WHERE account_id = $1 FOR UPDATE",
+         WHERE account_id = $1 FOR SHARE",
     )
     .bind(account_id)
     .fetch_optional(&mut **tx)
@@ -2165,18 +2173,28 @@ async fn require_role_tx(
     account_id: &str,
     device_id: &str,
     allowed: &[WorkspaceRole],
+    now: i64,
 ) -> Result<WorkspaceMember> {
     let row = sqlx::query(
         "SELECT members.id, members.email, members.display_name, members.role, members.status,
                 members.row_version, members.created_at, members.updated_at,
+                devices.state AS device_state,
+                COALESCE(accounts.document ->> 'state', 'active') AS account_state,
+                licenses.plan, licenses.plan_revision, licenses.status AS license_status,
+                licenses.expires_at, licenses.purchased_seats,
                 (SELECT COUNT(*) FROM device_member_bindings AS member_bindings
                  WHERE member_bindings.account_id = members.account_id
                    AND member_bindings.member_id = members.id) AS bound_device_count
          FROM device_member_bindings AS bindings
          JOIN workspace_members AS members ON members.id = bindings.member_id
+         JOIN devices ON devices.account_id = bindings.account_id
+           AND devices.device_id = bindings.device_id
+         JOIN accounts ON accounts.id = devices.account_id
+         JOIN licenses ON licenses.id = devices.license_id
+           AND licenses.account_id = devices.account_id
          WHERE bindings.account_id = $2 AND bindings.device_id = $1
            AND members.account_id = $2
-         FOR SHARE OF members",
+         FOR SHARE OF members, devices, accounts, licenses",
     )
     .bind(device_id)
     .bind(account_id)
@@ -2184,11 +2202,75 @@ async fn require_role_tx(
     .await
     .map_err(|_| ApiError::Database)?
     .ok_or(ApiError::PermissionDenied)?;
+    require_team_authority_row(&row, now)?;
     let member = row_member(row)?;
     if member.status != WorkspaceMemberStatus::Active || !allowed.contains(&member.role) {
         return Err(ApiError::PermissionDenied);
     }
     Ok(member)
+}
+
+async fn require_team_device_authority_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    account_id: &str,
+    device_id: &str,
+    now: i64,
+) -> Result<()> {
+    let row = sqlx::query(
+        "SELECT devices.state AS device_state,
+                COALESCE(accounts.document ->> 'state', 'active') AS account_state,
+                licenses.plan, licenses.plan_revision, licenses.status AS license_status,
+                licenses.expires_at, licenses.purchased_seats
+         FROM devices
+         JOIN accounts ON accounts.id = devices.account_id
+         JOIN licenses ON licenses.id = devices.license_id
+           AND licenses.account_id = devices.account_id
+         WHERE devices.account_id = $1 AND devices.device_id = $2
+         FOR SHARE OF devices, accounts, licenses",
+    )
+    .bind(account_id)
+    .bind(device_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|_| ApiError::Database)?
+    .ok_or(ApiError::PermissionDenied)?;
+    require_team_authority_row(&row, now)
+}
+
+fn require_team_authority_row(row: &PgRow, now: i64) -> Result<()> {
+    if row
+        .try_get::<String, _>("device_state")
+        .map_err(|_| ApiError::Database)?
+        != "active"
+    {
+        return Err(ApiError::PermissionDenied);
+    }
+    match row
+        .try_get::<String, _>("account_state")
+        .map_err(|_| ApiError::Database)?
+        .as_str()
+    {
+        "active" => {}
+        "suspended" => return Err(ApiError::AccountSuspended),
+        "denylisted" => return Err(ApiError::AccountDenylisted),
+        _ => return Err(ApiError::Database),
+    }
+    if policy_from_row(row)?.0 != Plan::Team {
+        return Err(ApiError::CapabilityDenied);
+    }
+    let expires_at: Option<i64> = row.try_get("expires_at").map_err(|_| ApiError::Database)?;
+    match row
+        .try_get::<String, _>("license_status")
+        .map_err(|_| ApiError::Database)?
+        .as_str()
+    {
+        "active" if expires_at.is_none_or(|expires_at| expires_at > now) => Ok(()),
+        "past_due" | "canceled" if expires_at.is_some_and(|expires_at| expires_at > now) => Ok(()),
+        "past_due" => Err(ApiError::LicensePastDue),
+        "canceled" => Err(ApiError::LicenseCanceled),
+        "active" => Err(ApiError::LicenseExpired),
+        _ => Err(ApiError::Database),
+    }
 }
 
 fn row_member(row: PgRow) -> Result<WorkspaceMember> {
@@ -2794,6 +2876,113 @@ mod tests {
             WorkspaceRole::Operator,
             WorkspaceMemberStatus::Active,
         ));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL"]
+    async fn final_team_authorization_rechecks_account_and_license_state() {
+        let database_url = std::env::var("TEST_DATABASE_URL")
+            .expect("TEST_DATABASE_URL is required for the PostgreSQL integration test");
+        let repository =
+            PostgresRepository::connect(&database_url, 2, std::time::Duration::from_secs(5))
+                .await
+                .expect("connect PostgreSQL");
+        repository.migrate().await.expect("run migrations");
+
+        let suffix = random_id("team_authority_test");
+        let account_id = format!("account_{suffix}");
+        let device_id = uuid::Uuid::new_v4().to_string();
+        let now = 1_800_000_000;
+        let active_account = Account::active(&account_id, now);
+        let team_license = License::new(&account_id, Plan::Team);
+        repository
+            .upsert_account(active_account.clone())
+            .await
+            .expect("create account");
+        repository
+            .upsert_license(team_license.clone())
+            .await
+            .expect("create Team license");
+        repository
+            .upsert_device(Device {
+                account_id: account_id.clone(),
+                license_id: team_license.id.clone(),
+                metadata: DeviceRegistrationMetadata {
+                    device_id: device_id.clone(),
+                    public_key_pem: "team-authority-test-public-key".to_owned(),
+                    public_key_thumbprint: format!("sha256:{device_id}"),
+                    platform: "test".to_owned(),
+                    app_version: "1.0.0".to_owned(),
+                    display_name: Some("Team authority test".to_owned()),
+                },
+                state: DeviceState::Active,
+                pending_activation_code_hash: None,
+                pending_activation_expires_at: None,
+                created_at: now,
+                last_seen_at: Some(now),
+            })
+            .await
+            .expect("create active device and owner binding");
+
+        let mut suspended_account = active_account.clone();
+        suspended_account.state = crate::domain::AccountState::Suspended;
+        repository
+            .upsert_account(suspended_account)
+            .await
+            .expect("suspend account between outer authorization and final transaction");
+        let mut tx = repository.pool.begin().await.expect("begin account check");
+        assert!(matches!(
+            require_role_tx(
+                &mut tx,
+                &account_id,
+                &device_id,
+                &[WorkspaceRole::Owner, WorkspaceRole::Admin],
+                now,
+            )
+            .await,
+            Err(ApiError::AccountSuspended)
+        ));
+        assert!(matches!(
+            require_team_device_authority_tx(&mut tx, &account_id, &device_id, now).await,
+            Err(ApiError::AccountSuspended)
+        ));
+        tx.rollback().await.expect("rollback account check");
+
+        repository
+            .upsert_account(active_account)
+            .await
+            .expect("restore active account");
+        let mut free_license = team_license;
+        free_license.set_plan(Plan::Free);
+        free_license.license_epoch += 1;
+        free_license.row_version += 1;
+        repository
+            .upsert_license(free_license)
+            .await
+            .expect("downgrade license between outer authorization and final transaction");
+        let mut tx = repository.pool.begin().await.expect("begin license check");
+        assert!(matches!(
+            require_role_tx(
+                &mut tx,
+                &account_id,
+                &device_id,
+                &[WorkspaceRole::Owner, WorkspaceRole::Admin],
+                now,
+            )
+            .await,
+            Err(ApiError::CapabilityDenied)
+        ));
+        assert!(matches!(
+            require_team_device_authority_tx(&mut tx, &account_id, &device_id, now).await,
+            Err(ApiError::CapabilityDenied)
+        ));
+        tx.rollback().await.expect("rollback license check");
+
+        sqlx::query("DELETE FROM accounts WHERE id = $1")
+            .bind(&account_id)
+            .execute(&repository.pool)
+            .await
+            .expect("clean up authority fixture");
     }
 
     #[tokio::test]

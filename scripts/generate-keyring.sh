@@ -33,7 +33,7 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-key=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')
+key=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\r\n')
 printf '{\n  "activeKeyId": "%s",\n  "keys": {\n    "%s": "%s"\n  }\n}\n' \
   "$key_id" "$key_id" "$key" >"$temporary"
 chmod 600 "$temporary"
