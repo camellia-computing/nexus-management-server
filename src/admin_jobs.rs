@@ -1410,7 +1410,7 @@ async fn advance_overdue_invoices(
         .map_err(|_| ApiError::Database)?;
     let rows = sqlx::query(
         "UPDATE billing_invoices
-         SET status = 'overdue', updated_at = $1
+         SET status = 'overdue', updated_at = $1, row_version = row_version + 1
          WHERE status = 'open' AND due_at <= $1
          RETURNING id, account_id, license_id",
     )
@@ -2228,6 +2228,125 @@ mod tests {
             .await
             .expect("delete admin user");
         repository.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL"]
+    async fn overdue_invoice_transition_advances_row_version_and_writes_audit() {
+        let database_url = std::env::var("TEST_DATABASE_URL")
+            .expect("TEST_DATABASE_URL is required for the PostgreSQL integration test");
+        let repository = PostgresRepository::connect(&database_url, 2, Duration::from_secs(5))
+            .await
+            .expect("connect PostgreSQL");
+        repository.migrate().await.expect("run migrations");
+
+        let suffix = random_id("overdue_test");
+        let account_id = format!("account_{suffix}");
+        let license_id = format!("license_{suffix}");
+        let offer_id = format!("offer_{suffix}");
+        let invoice_id = format!("invoice_{suffix}");
+        let now = 2_000_000_000_i64;
+        sqlx::query(
+            "INSERT INTO accounts (id, document)
+             VALUES ($1, jsonb_build_object('created_at', $2::BIGINT))",
+        )
+        .bind(&account_id)
+        .bind(now)
+        .execute(&repository.pool)
+        .await
+        .expect("insert overdue-test account");
+        sqlx::query(
+            "INSERT INTO licenses
+                (id, account_id, plan, plan_revision, status, expires_at, license_epoch,
+                 purchased_seats, row_version)
+             VALUES ($1, $2, 'pro', 1, 'active', NULL, 1, 0, 1)",
+        )
+        .bind(&license_id)
+        .bind(&account_id)
+        .execute(&repository.pool)
+        .await
+        .expect("insert overdue-test license");
+        sqlx::query(
+            "INSERT INTO commercial_offers
+                (id, plan, plan_revision, duration_days, currency, base_amount, seat_amount,
+                 name_en, name_zh, active, created_at, updated_at)
+             VALUES ($1, 'pro', 1, 365, 'USD', 99, NULL, 'Test', 'Test', true, $2, $2)",
+        )
+        .bind(&offer_id)
+        .bind(now)
+        .execute(&repository.pool)
+        .await
+        .expect("insert overdue-test offer");
+        sqlx::query(
+            "INSERT INTO billing_invoices
+                (id, account_id, license_id, offer_id, plan, plan_revision, seats,
+                 duration_days, currency, amount_due, payment_reference, status, due_at,
+                 paid_at, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, 'pro', 1, 0, 365, 'USD', 99, $5, 'open', $6,
+                     NULL, $7, $7)",
+        )
+        .bind(&invoice_id)
+        .bind(&account_id)
+        .bind(&license_id)
+        .bind(&offer_id)
+        .bind(format!("CNX-OVERDUE-{suffix}"))
+        .bind(now - 1)
+        .bind(now - 60)
+        .execute(&repository.pool)
+        .await
+        .expect("insert overdue-test invoice");
+
+        let advanced = advance_overdue_invoices(&repository, now)
+            .await
+            .expect("advance overdue invoice");
+        let invoice_state: (String, i64) =
+            sqlx::query_as("SELECT status, row_version FROM billing_invoices WHERE id = $1")
+                .bind(&invoice_id)
+                .fetch_one(&repository.pool)
+                .await
+                .expect("load advanced invoice");
+        let audit_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM audit_events
+             WHERE event_type = 'billing_invoice_overdue' AND metadata ->> 'invoice_id' = $1",
+        )
+        .bind(&invoice_id)
+        .fetch_one(&repository.pool)
+        .await
+        .expect("count overdue audit events");
+
+        sqlx::query(
+            "DELETE FROM audit_events
+             WHERE event_type = 'billing_invoice_overdue' AND metadata ->> 'invoice_id' = $1",
+        )
+        .bind(&invoice_id)
+        .execute(&repository.pool)
+        .await
+        .expect("delete overdue-test audit");
+        sqlx::query("DELETE FROM billing_invoices WHERE id = $1")
+            .bind(&invoice_id)
+            .execute(&repository.pool)
+            .await
+            .expect("delete overdue-test invoice");
+        sqlx::query("DELETE FROM commercial_offers WHERE id = $1")
+            .bind(&offer_id)
+            .execute(&repository.pool)
+            .await
+            .expect("delete overdue-test offer");
+        sqlx::query("DELETE FROM licenses WHERE id = $1")
+            .bind(&license_id)
+            .execute(&repository.pool)
+            .await
+            .expect("delete overdue-test license");
+        sqlx::query("DELETE FROM accounts WHERE id = $1")
+            .bind(&account_id)
+            .execute(&repository.pool)
+            .await
+            .expect("delete overdue-test account");
+        repository.close().await;
+
+        assert_eq!(advanced, 1);
+        assert_eq!(invoice_state, ("overdue".to_owned(), 2));
+        assert_eq!(audit_count, 1);
     }
 
     #[test]
