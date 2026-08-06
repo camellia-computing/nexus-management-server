@@ -1524,7 +1524,7 @@ fn next_secret_purge_check(
     }
 }
 
-async fn purge_secret_deliveries(
+pub(crate) async fn purge_secret_deliveries(
     repository: &PostgresRepository,
     now: i64,
 ) -> Result<u64, ApiError> {
@@ -1549,7 +1549,7 @@ async fn purge_secret_deliveries(
     .rows_affected())
 }
 
-async fn purge_enrollment_states(
+pub(crate) async fn purge_enrollment_states(
     repository: &PostgresRepository,
     now: i64,
 ) -> Result<u64, ApiError> {

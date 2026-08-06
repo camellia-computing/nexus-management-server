@@ -146,6 +146,15 @@ const ADMIN_WORKER_DELETE_TABLES: &[&str] = &[
     "stored_objects",
 ];
 
+// PostgreSQL requires UPDATE on at least one column of every relation locked by
+// SELECT ... FOR UPDATE, even when the enclosing statement only deletes rows.
+// Keep those lock-only privileges narrower than table-wide UPDATE.
+const ADMIN_WORKER_LOCK_COLUMNS: &[(&str, &[&str])] = &[
+    ("admin_enrollment_states", &["token_hash"]),
+    ("admin_enrollment_tokens", &["token_hash"]),
+    ("admin_secret_deliveries", &["id"]),
+];
+
 #[derive(Debug, Error)]
 pub enum DatabaseRoleError {
     #[error("database runtime-role configuration is incomplete: {0}")]
@@ -345,6 +354,13 @@ async fn apply_runtime_database_grants_for_roles(
         ADMIN_WORKER_DELETE_TABLES,
     )
     .await?;
+    grant_column_privileges(
+        &mut transaction,
+        &roles.admin_worker,
+        "UPDATE",
+        ADMIN_WORKER_LOCK_COLUMNS,
+    )
+    .await?;
     transaction
         .commit()
         .await
@@ -472,6 +488,31 @@ async fn grant_table_privileges(
     .await
 }
 
+async fn grant_column_privileges(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    role: &str,
+    privilege: &'static str,
+    table_columns: &[(&str, &[&str])],
+) -> Result<(), DatabaseRoleError> {
+    for (table, columns) in table_columns {
+        let column_list = columns
+            .iter()
+            .map(|column| quote_identifier(column))
+            .collect::<Vec<_>>()
+            .join(", ");
+        execute(
+            transaction,
+            &format!(
+                "GRANT {privilege} ({column_list}) ON TABLE public.{} TO {}",
+                quote_identifier(table),
+                quote_identifier(role)
+            ),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 async fn execute(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     statement: &str,
@@ -552,6 +593,9 @@ mod tests {
                 .iter()
                 .all(|table| ADMIN_WORKER_TABLES.contains(table))
         );
+        assert!(ADMIN_WORKER_LOCK_COLUMNS.iter().all(|(table, columns)| {
+            ADMIN_WORKER_TABLES.contains(table) && !columns.is_empty()
+        }));
         assert!(
             !PUBLIC_TABLES
                 .iter()
@@ -632,6 +676,41 @@ mod tests {
                 .fetch_one(&repository.pool)
                 .await
                 .expect("inspect Worker identity mutation privilege");
+        let worker_delivery_lock: bool = sqlx::query_scalar(
+            "SELECT has_column_privilege($1, 'admin_secret_deliveries', 'id', 'UPDATE')",
+        )
+        .bind(&roles.admin_worker)
+        .fetch_one(&repository.pool)
+        .await
+        .expect("inspect Worker secret-delivery lock privilege");
+        let worker_delivery_payload_update: bool = sqlx::query_scalar(
+            "SELECT has_column_privilege($1, 'admin_secret_deliveries', 'ciphertext', 'UPDATE')",
+        )
+        .bind(&roles.admin_worker)
+        .fetch_one(&repository.pool)
+        .await
+        .expect("inspect Worker secret-delivery payload privilege");
+        let worker_enrollment_state_lock: bool = sqlx::query_scalar(
+            "SELECT has_column_privilege($1, 'admin_enrollment_states', 'token_hash', 'UPDATE')",
+        )
+        .bind(&roles.admin_worker)
+        .fetch_one(&repository.pool)
+        .await
+        .expect("inspect Worker enrollment-state lock privilege");
+        let worker_enrollment_token_lock: bool = sqlx::query_scalar(
+            "SELECT has_column_privilege($1, 'admin_enrollment_tokens', 'token_hash', 'UPDATE')",
+        )
+        .bind(&roles.admin_worker)
+        .fetch_one(&repository.pool)
+        .await
+        .expect("inspect Worker enrollment-token lock privilege");
+        let worker_enrollment_expiry_update: bool = sqlx::query_scalar(
+            "SELECT has_column_privilege($1, 'admin_enrollment_tokens', 'expires_at', 'UPDATE')",
+        )
+        .bind(&roles.admin_worker)
+        .fetch_one(&repository.pool)
+        .await
+        .expect("inspect Worker enrollment-token mutation privilege");
 
         let test_owner: String = sqlx::query_scalar("SELECT current_user")
             .fetch_one(&repository.pool)
@@ -667,6 +746,25 @@ mod tests {
         crate::admin_http::admin_schema_ready(&worker_repository)
             .await
             .expect("Admin schema readiness must remain privilege independent");
+        assert_eq!(
+            crate::admin_jobs::purge_secret_deliveries(&worker_repository, 0)
+                .await
+                .expect("restricted Worker must execute secret-delivery cleanup"),
+            0
+        );
+        assert_eq!(
+            crate::admin_jobs::purge_enrollment_states(&worker_repository, 0)
+                .await
+                .expect("restricted Worker must execute enrollment-state cleanup"),
+            0
+        );
+        assert!(
+            sqlx::query("UPDATE admin_secret_deliveries SET ciphertext = ciphertext WHERE FALSE")
+                .execute(&worker_repository.pool)
+                .await
+                .is_err(),
+            "lock-only UPDATE must not permit secret payload mutation"
+        );
         worker_repository.pool.close().await;
 
         for role in [&roles.public, &roles.admin_web, &roles.admin_worker] {
@@ -693,5 +791,10 @@ mod tests {
         assert!(worker_jobs);
         assert!(!worker_passwords);
         assert!(!worker_identity_insert);
+        assert!(worker_delivery_lock);
+        assert!(!worker_delivery_payload_update);
+        assert!(worker_enrollment_state_lock);
+        assert!(worker_enrollment_token_lock);
+        assert!(!worker_enrollment_expiry_update);
     }
 }
