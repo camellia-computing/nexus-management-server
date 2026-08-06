@@ -168,7 +168,7 @@ jobs:
           persist-credentials: false
       - name: Rust toolchain
         run: rustup toolchain install --no-self-update
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.2
       - name: Workflows
         uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # 1.7.12
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -458,7 +458,7 @@ jobs:
       - name: Rust toolchain
         working-directory: client
         run: rustup toolchain install --no-self-update
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.2
         with:
           key: server-windows-native-e2e
           workspaces: client -> target
