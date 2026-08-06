@@ -2564,6 +2564,39 @@ test('dashboard is responsive in light and dark modes', async ({ page }) => {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
     true
   );
+  const timelineButtons = page.locator('.recent-panel .timeline > button');
+  await expect(timelineButtons).toHaveCount(3);
+  await expect(page.locator('.recent-panel .status-badge')).toHaveCount(0);
+  const timelineLayout = await timelineButtons.evaluateAll((buttons) =>
+    buttons.map((button) => {
+      const marker = button.querySelector(':scope > i');
+      const content = button.querySelector(':scope > span');
+      const icon = button.querySelector(':scope > svg');
+      if (!(marker instanceof HTMLElement) || !(content instanceof HTMLElement) || !icon) {
+        throw new Error('dashboard timeline item is missing its marker, content, or action icon');
+      }
+      const markerBounds = marker.getBoundingClientRect();
+      const contentBounds = content.getBoundingClientRect();
+      const iconBounds = icon.getBoundingClientRect();
+      return {
+        markerLeft: markerBounds.left,
+        contentLeft: contentBounds.left,
+        iconRight: iconBounds.right,
+        iconWidth: iconBounds.width,
+        iconHeight: iconBounds.height
+      };
+    })
+  );
+  for (const key of [
+    'markerLeft',
+    'contentLeft',
+    'iconRight',
+    'iconWidth',
+    'iconHeight'
+  ] as const) {
+    const values = timelineLayout.map((item) => item[key]);
+    expect(Math.max(...values) - Math.min(...values), key).toBeLessThanOrEqual(1);
+  }
   await page.screenshot({ path: 'test-results/dashboard-tablet.png', fullPage: true });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.getByRole('button', { name: '账户', exact: true }).click();

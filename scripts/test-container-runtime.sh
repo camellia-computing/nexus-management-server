@@ -752,7 +752,8 @@ unset live_claim_token
 unset live_login_counter live_login_totp live_login_body live_session_cookie live_csrf_cookie
 unset expired_sessions
 
-docker run --detach --name "$worker" "${admin_common[@]}" "${runtime_security[@]}" \
+docker run --detach --name "$worker" --publish 127.0.0.1::9091 \
+  "${admin_common[@]}" "${runtime_security[@]}" \
   --env "DATABASE_URL=$admin_worker_database_url" \
   "$image" admin-worker >/dev/null
 worker_ready=0
@@ -769,6 +770,43 @@ for _ in {1..30}; do
 done
 if [[ "$worker_ready" != 1 ]]; then
   echo 'Admin Worker failed to become ready' >&2
+  docker logs "$worker" 2>&1 |
+    sed -E 's#postgres://[^[:space:]"]+#postgres://[redacted]#g' >&2
+  exit 1
+fi
+
+worker_address="$(docker port "$worker" 9091/tcp)"
+worker_port="${worker_address##*:}"
+[[ "$worker_port" =~ ^[0-9]+$ ]]
+worker_metrics_url="http://127.0.0.1:$worker_port/metrics"
+worker_iterations=0
+worker_error_iterations=0
+for _ in {1..30}; do
+  worker_metrics="$(curl --fail --silent --show-error "$worker_metrics_url")"
+  worker_iterations="$(awk '
+    /^camellia_nexus_background_iterations_total\{role="admin_worker",/ { total += $2 }
+    END { print total + 0 }
+  ' <<<"$worker_metrics")"
+  worker_error_iterations="$(awk '
+    /^camellia_nexus_background_iterations_total\{role="admin_worker",outcome="error"\}/ {
+      print $2
+      found = 1
+    }
+    END { if (!found) print 0 }
+  ' <<<"$worker_metrics")"
+  if (( worker_iterations > 0 )); then
+    break
+  fi
+  sleep 1
+done
+if (( worker_iterations == 0 || worker_error_iterations != 0 )); then
+  echo 'Admin Worker did not complete a clean background iteration' >&2
+  docker logs "$worker" 2>&1 |
+    sed -E 's#postgres://[^[:space:]"]+#postgres://[redacted]#g' >&2
+  exit 1
+fi
+if docker logs "$worker" 2>&1 | grep -Fq '"level":"ERROR"'; then
+  echo 'Admin Worker logged an error during clean startup' >&2
   docker logs "$worker" 2>&1 |
     sed -E 's#postgres://[^[:space:]"]+#postgres://[redacted]#g' >&2
   exit 1

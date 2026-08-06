@@ -13,7 +13,6 @@
   import { api } from './api';
   import type { AdminDashboard } from './admin-contracts';
   import { copy, defineCopy, locale, localeTag } from './i18n';
-  import StatusBadge from './StatusBadge.svelte';
 
   let { onNavigate }: { onNavigate: (id: string) => void } = $props();
   const messages = defineCopy(
@@ -289,19 +288,19 @@
           ><strong>{messages[$locale].auditTrail}</strong><small
             >{messages[$locale].auditTrailDetail}</small
           ></span
-        ><StatusBadge value="active" /></button
+        ><ArrowUpRight size={17} /></button
       ><button onclick={() => onNavigate('jobs')}
         ><i class="violet"></i><span
           ><strong>{messages[$locale].bulkJobs}</strong><small
             >{messages[$locale].bulkJobsDetail}</small
           ></span
-        ><StatusBadge value="running" /></button
+        ><ArrowUpRight size={17} /></button
       ><button onclick={() => onNavigate('team')}
         ><i class="blue"></i><span
           ><strong>{messages[$locale].teamWorkspace}</strong><small
             >{messages[$locale].teamDetail}</small
           ></span
-        ><StatusBadge value="active" /></button
+        ><ArrowUpRight size={17} /></button
       >
     </div>
   </article>

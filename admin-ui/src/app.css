@@ -1029,28 +1029,36 @@ select:focus-visible {
   margin-top: 13px;
   border-top: 1px solid var(--line);
 }
-.timeline > div {
+.timeline > button {
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
   gap: 10px;
   padding: 14px 16px 4px 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  color: inherit;
 }
-.timeline > div + div {
+.timeline > button + button {
   border-left: 1px solid var(--line);
   padding-left: 16px;
 }
-.timeline > div > i {
+.timeline > button > i {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: var(--accent);
 }
-.timeline > div > i.green {
+.timeline > button > i.green {
   background: var(--success);
 }
-.timeline > div > i.violet {
+.timeline > button > i.violet {
   background: var(--accent-2);
+}
+.timeline > button > svg {
+  justify-self: end;
+  color: var(--faint);
 }
 .timeline span {
   display: flex;
@@ -1806,8 +1814,10 @@ select:focus-visible {
   .timeline {
     grid-template-columns: 1fr;
   }
-  .timeline > div + div {
+  .timeline > button + button {
     border-left: 0;
+    border-top: 1px solid var(--line);
+    padding-left: 0;
   }
   .activity-panel {
     min-height: 300px;
@@ -3454,33 +3464,6 @@ textarea:focus-visible {
   background: var(--muted);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--muted), transparent 85%);
 }
-.timeline > button {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: center;
-  gap: 10px;
-  padding: 14px 16px 4px 0;
-  border: 0;
-  background: transparent;
-  text-align: left;
-  color: inherit;
-}
-.timeline > button + button {
-  border-left: 1px solid var(--line);
-  padding-left: 16px;
-}
-.timeline > button > i {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--accent);
-}
-.timeline > button > i.green {
-  background: var(--success);
-}
-.timeline > button > i.violet {
-  background: var(--accent-2);
-}
 .notification-menu {
   width: 245px;
   padding: 14px;
@@ -3584,11 +3567,6 @@ textarea:focus-visible {
   font-size: var(--font-2xs);
   color: var(--muted);
   line-height: 1.5;
-}
-@container (max-width: 1100px) {
-  .timeline > button + button {
-    border-left: 0;
-  }
 }
 .table-load-more {
   display: flex;
