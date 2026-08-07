@@ -63,7 +63,7 @@ CAMELLIA_NEXUS_CLEANUP_BATCH_SIZE=1000
 镜像位置由组织审核后的 `CONTAINER_REGISTRY_MAP` 决定。GHCR 和 Docker Hub
 分别按配置发布；未配置的目标会明确跳过，不允许由凭据或手工输入隐式启用。
 
-服务端与客户端分别维护独立的版本序列。服务端只发布规范的稳定语义化版本；发布前绑定最高的已完成兼容客户端正式版，审批前冻结并扫描 OCI 字节，审批后仅把同一 digest 复制到已配置的注册表。完成不可变 Release、证据与公开回读后，`latest` 才指向最高已完成稳定版；发布 tag 和版本镜像 tag 不得覆盖。该仓库只使用绑定 OCI digest 的无密钥 Cosign/OIDC 身份，不保存桌面或移动端证书/密钥。完整流程见 [发布规范](docs/releasing.md)。
+服务端与客户端分别维护独立的版本序列。服务端只发布规范的稳定语义化版本；发布前绑定最高的已完成兼容客户端正式版，审批前冻结并扫描 OCI 字节，审批后仅把同一 digest 复制到已配置的注册表。完整 SBOM、provenance、证据、校验和与 Sigstore bundle 保留在 Actions/attestation 中；服务端 GitHub Release 不包含文件 Assets，Release Notes 中的注册表 `@sha256` 引用才是最终产物。完成不可变 Release、零文件资产公开回读与证据验证后，`latest` 才指向最高已完成稳定版；发布 tag 和版本镜像 tag 不得覆盖。该仓库只使用绑定 OCI digest 的无密钥 Cosign/OIDC 身份，不保存桌面或移动端证书/密钥。完整流程见 [发布规范](docs/releasing.md)。
 
 容器部署要点：
 
@@ -550,7 +550,7 @@ GHCR and Docker Hub are published independently when configured; an absent
 target is explicitly skipped and cannot be inferred from credentials or a
 manual input.
 
-Server and client versions advance independently. Before approval, the server binds the highest completed compatible client release and freezes and scans one OCI layout. After approval, only that digest is copied to configured registries. `latest` is reconciled to the highest completed stable release only after immutable Release evidence and public readback succeed. Release tags and versioned image tags must never be replaced. This repository uses only the keyless Cosign/OIDC identity bound to its OCI digest and does not store desktop or mobile signing credentials. See the [release policy](docs/releasing.md) for the complete procedure.
+Server and client versions advance independently. Before approval, the server binds the highest completed compatible client release and freezes and scans one OCI layout. After approval, only that digest is copied to configured registries. Complete SBOM, provenance, evidence, checksums and Sigstore bundles remain in Actions/attestations; the server GitHub Release has no file Assets, and the registry `@sha256` references in Release Notes are the final product. `latest` is reconciled to the highest completed stable release only after immutable zero-asset Release readback and complete evidence verification succeed. Release tags and versioned image tags must never be replaced. This repository uses only the keyless Cosign/OIDC identity bound to its OCI digest and does not store desktop or mobile signing credentials. See the [release policy](docs/releasing.md) for the complete procedure.
 
 Container deployment notes:
 

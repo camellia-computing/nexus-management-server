@@ -289,7 +289,9 @@ addresses, customer data, credentials, or machine-local procedures here.
   App's SHA-guarded squash merge.
 - Formal publication verifies the managed tag/commit/release identity, builds the supported
   `linux/amd64` image, verifies runtime and OCI labels, scans it, signs the canonical digest with the
-  exact workflow identity, creates immutable aliases, publishes the GitHub Release, and reads it back.
+  exact workflow identity, creates immutable aliases, and publishes an immutable GitHub Release whose
+  Notes identify the digest and whose file-asset set is empty. SBOM, provenance, evidence, checksums
+  and Sigstore bundles remain in Actions/attestations and are fully verified before public readback.
 - Production pins the canonical digest from the formal Release; never deploy `latest`, a candidate
   tag, or an unverified local build. `migrate`, `serve`, `admin-web`, and `admin-worker` use exactly the
   same digest.
