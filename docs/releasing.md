@@ -176,7 +176,9 @@ None of those files is a public GitHub Release Asset. A server GitHub
 Release has **zero file assets**. Its Release Notes list every configured final
 image as an exact `registry/repository@sha256:<digest>` reference and carry the
 single machine-readable `container-digest` marker. The digest-pinned OCI image,
-not an evidence archive or mutable tag, is the final server product.
+not an evidence archive or mutable tag, is the final server product. Zero means
+the GitHub API `assets` array is empty; no archive, checksum, or evidence file is
+uploaded to that surface.
 
 Trivy scans the extracted, digest-checked OCI layout. The original OCI archive
 remains unchanged as the frozen input later copied to each configured registry.
