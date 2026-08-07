@@ -27,7 +27,7 @@ flowchart TD
   FREEZE --> APPROVE[release environment team approval]
   APPROVE --> COPY[Copy the frozen digest to configured registries]
   COPY --> SIGN[Cosign, runtime verification, and registry readback]
-  SIGN --> RELEASE[Evidence assets and immutable GitHub Release]
+  SIGN --> RELEASE[OCI digest notes and immutable zero-asset GitHub Release]
   RELEASE --> COMPLETE[Record exact-SHA completion]
   COMPLETE --> LATEST[Select highest completed stable version]
   LATEST --> DONE[Reconcile GitHub and registry latest aliases]
@@ -70,9 +70,13 @@ Publication separates evidence construction from production authority:
 1. `Authorize` binds the managed tag to the merged Release PR and its exact
    successful CI run.
 2. Before entering the `release` environment, `Freeze candidate` resolves the
-   highest completed immutable `nexus-client` release, validates its tag and
-   release evidence, checks the service/client wire contract at that exact
-   commit, and records it as a `compatible-with` dependency.
+   highest completed immutable `nexus-client` release, validates its exact
+   lightweight tag, App identity, completion marker and public asset whitelist,
+   downloads only `SHA256SUMS`, compares its own GitHub API digest and every one
+   of its nine package hashes with Release Asset API digests, checks the
+   service/client wire contract at that exact commit, and records a normalized
+   snapshot as a `compatible-with` dependency. It does not download the large
+   client packages or require public CI evidence.
 3. Buildx creates one OCI layout for `linux/amd64`. Trivy scans those exact
    bytes. Syft creates an SPDX SBOM. GitHub OIDC records provenance and SBOM
    attestations for the canonical digest. The formal build does not import or
@@ -83,9 +87,6 @@ Publication separates evidence construction from production authority:
 5. The protected `release` environment requires team approval and disallows
    administrator bypass. After approval, the workflow may only publish or
    verify the frozen digest; it does not rebuild it.
-
-The first formal release follows the same path and uses `v1.0.0`; no legacy or
-transition release path exists.
 
 ## Registry policy
 
@@ -134,7 +135,7 @@ Service image and evidence signing use short-lived GitHub OIDC identities:
 
 - OCI digest: keyless Cosign signature per configured registry;
 - provenance and SPDX SBOM: GitHub attestations bound to the digest;
-- every GitHub Release evidence asset: a keyless Cosign blob bundle.
+- every retained internal evidence file: a keyless Cosign blob bundle.
 
 Private native certificates are allowed only in repositories that produce
 native packages, where the final bytes determine the explicitly reported trust
@@ -160,24 +161,34 @@ reviewed before expiry rather than silently becoming permanent.
 
 ## Evidence and readback
 
-The immutable GitHub Release contains:
+The retained Actions Artifact and attestation systems keep the complete internal
+evidence set:
 
 - SPDX SBOM, vulnerability report, provenance and SBOM attestation bundles;
 - frozen and final release evidence;
-- exact client dependency metadata and the downloaded client release evidence;
+- normalized exact client dependency metadata;
 - OCI platform metadata and per-registry results;
 - non-secret Cosign verification results;
-- `SHA256SUMS`;
-- one Sigstore bundle for every evidence asset.
+- the internal evidence `SHA256SUMS`;
+- one Sigstore bundle for every internal evidence file.
+
+None of those files is a public GitHub Release Asset. A server GitHub
+Release has **zero file assets**. Its Release Notes list every configured final
+image as an exact `registry/repository@sha256:<digest>` reference and carry the
+single machine-readable `container-digest` marker. The digest-pinned OCI image,
+not an evidence archive or mutable tag, is the final server product.
 
 Trivy scans the extracted, digest-checked OCI layout. The original OCI archive
 remains unchanged as the frozen input later copied to each configured registry.
 
-Before the draft becomes public, the workflow uploads and downloads the exact
-asset multiset, verifies checksums, evidence schema, blob signatures, GitHub
+Before the draft becomes public, the workflow verifies the complete internal
+evidence multiset, checksums, evidence schema, blob signatures, GitHub
 attestations, OCI labels, executable version, service runtime, registry
-aliases, and image signatures. It then publishes without assigning `latest`,
-repeats public readback, records `release-complete:<SHA>`, removes
+aliases, and image signatures. It fails if the managed draft has any file
+asset, records the exact digest in Release Notes, and publishes without
+assigning `latest`. Public readback requires zero file assets, the exact digest
+references, immutable registry aliases, Cosign signatures, GitHub attestations,
+labels/version and runtime acceptance. It then records `release-complete:<SHA>`, removes
 `release:pending`, and finally reconciles latest.
 
 ## Hosted controls and credentials
@@ -229,7 +240,8 @@ pre-publication repair is bounded to the same App-authored draft, exact source,
 reviewed registry map, and protected environment approval. Once the draft
 records a container digest, every alias is immutable and a conflict fails
 closed. A public rerun cannot build, replace, or sign new bytes: it must use the
-digest recorded in Release notes, verify every configured registry and asset,
-and complete any remaining proof/latest reconciliation. Any committed alias
+digest recorded in Release Notes, require the zero-file-asset contract, verify
+every configured registry, signature, attestation, label and runtime check, and
+complete any remaining proof/latest reconciliation. Any committed alias
 conflict, untrusted signature, missing recorded digest, or evidence mismatch
 requires operator investigation.

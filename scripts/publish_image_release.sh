@@ -107,24 +107,6 @@ refresh_release() {
     { echo "Release contains duplicate asset names" >&2; return 1; }
 }
 
-download_asset() {
-  local name="$1" destination="$2" asset_id
-  asset_id="$(jq -r --arg name "$name" '.[] | select(.name == $name) | .id' "$assets_json")"
-  [[ "$asset_id" =~ ^[1-9][0-9]*$ ]] ||
-    { echo "Unable to resolve remote asset $name" >&2; return 1; }
-  GH_TOKEN="$RELEASE_POLICY_TOKEN" gh api -H "Accept: application/octet-stream" \
-    "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" > "$destination"
-}
-
-delete_asset() {
-  local name="$1" asset_id
-  asset_id="$(jq -r --arg name "$name" '.[] | select(.name == $name) | .id' "$assets_json")"
-  [[ "$asset_id" =~ ^[1-9][0-9]*$ ]] ||
-    { echo "Unable to resolve draft asset $name" >&2; return 1; }
-  GH_TOKEN="$RELEASE_POLICY_TOKEN" gh api -X DELETE \
-    "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" >/dev/null
-}
-
 verify_blob_bundle() {
   local subject="$1" bundle="$2" allowed_identity
   local -a identities=("$tag_identity")
@@ -203,7 +185,6 @@ SHA256SUMS
 VULNERABILITY-SCAN.json
 dependencies.json
 frozen-release-evidence.json
-nexus-client-release-evidence.json
 nexus-client-release.json
 registry-results.json
 release-evidence.json
@@ -218,6 +199,15 @@ EOF
     cat "$expected_raw_names"
     sed "s/$/.sigstore.json/" "$expected_raw_names"
   } | LC_ALL=C sort > "$expected_names"
+}
+
+assert_no_release_assets() {
+  local state="$1"
+  [[ ! -s "$remote_names" ]] || {
+    echo "$state Release must not contain file assets:" >&2
+    sed "s/^/  /" "$remote_names" >&2
+    return 1
+  }
 }
 
 verify_registry_evidence() {
@@ -285,15 +275,26 @@ verify_asset_directory() {
   done < <(find "$directory" -maxdepth 1 -type f -name "*.sigstore.json" -print0 | sort -z)
 }
 
-verify_remote_release() {
-  local destination="$1" digest="$2" name
-  diff -u "$expected_names" "$remote_names"
-  mkdir "$destination"
-  while IFS= read -r name; do
-    download_asset "$name" "$destination/$name"
-  done < "$expected_names"
-  verify_asset_directory "$destination" "$digest"
-  [[ "$(jq -r '.images[0].digest' "$destination/release-evidence.json")" == "$digest" ]]
+verify_release_digest_reference() {
+  local digest="$1" body image
+  body="$(jq -r '.body // ""' "$release_json")"
+  [[ "$(grep -Fxc "<!-- container-digest:$digest -->" <<< "$body" || true)" == 1 ]] || {
+    echo "Published Release lacks its exact container digest" >&2
+    return 1
+  }
+  for image in "$dockerhub_image" "$ghcr_image"; do
+    [[ -n "$image" ]] || continue
+    [[ "$(grep -Fxc -- "- \`$image@$digest\`" <<< "$body" || true)" == 1 ]] || {
+      echo "Published Release notes do not identify the final image $image@$digest" >&2
+      return 1
+    }
+  done
+}
+
+verify_public_release() {
+  local digest="$1"
+  assert_no_release_assets Published
+  verify_release_digest_reference "$digest"
 }
 
 verify_attestations() {
@@ -311,6 +312,33 @@ verify_attestations() {
   }
 }
 
+verify_image_runtime() {
+  local digest="$1" actual_version actual_label_version actual_label_revision actual_label_source
+  docker pull "$primary_image@$digest"
+  actual_version="$(docker run --rm "$primary_image@$digest" --version)"
+  [[ "$actual_version" == "camellia-nexus-management-server $VERSION" ]]
+  actual_label_version="$(
+    docker image inspect \
+      --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' \
+      "$primary_image@$digest"
+  )"
+  [[ "$actual_label_version" == "$VERSION" ]]
+  actual_label_revision="$(
+    docker image inspect \
+      --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+      "$primary_image@$digest"
+  )"
+  [[ "$actual_label_revision" == "$RELEASE_SHA" ]]
+  actual_label_source="$(
+    docker image inspect \
+      --format '{{ index .Config.Labels "org.opencontainers.image.source" }}' \
+      "$primary_image@$digest"
+  )"
+  [[ "$actual_label_source" == "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" ]]
+  bash "$script_directory/test-container-runtime.sh" \
+    "$primary_image@$digest" "$release_source_root"
+}
+
 configure_expected_assets
 refresh_release
 
@@ -324,11 +352,14 @@ if [[ "$verify_published_only" == true || "$(jq -r '.draft' "$release_json")" ==
     verify_registry_aliases "$image" "$recorded_digest"
     verify_image_signature "$image" "$recorded_digest" >/dev/null
   done
-  verify_remote_release "$work_directory/published-existing" "$recorded_digest"
+  verify_public_release "$recorded_digest"
   verify_attestations "$recorded_digest"
+  verify_image_runtime "$recorded_digest"
   echo "Verified existing immutable $tag and all configured registry aliases"
   exit 0
 fi
+
+assert_no_release_assets Draft
 
 [[ -d "$assets_directory" && ! -L "$assets_directory" ]] ||
   { echo "Release assets directory is unavailable" >&2; exit 1; }
@@ -467,29 +498,7 @@ publish_registry ghcr "$ghcr_image"
 jq -s 'sort_by(.name)' "${registry_fragments[@]}" > "$assets_directory/registry-results.json"
 verify_registry_evidence "$assets_directory" "$digest"
 
-docker pull "$primary_image@$digest"
-actual_version="$(docker run --rm "$primary_image@$digest" --version)"
-[[ "$actual_version" == "camellia-nexus-management-server $VERSION" ]]
-actual_label_version="$(
-  docker image inspect \
-    --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' \
-    "$primary_image@$digest"
-)"
-[[ "$actual_label_version" == "$VERSION" ]]
-actual_label_revision="$(
-  docker image inspect \
-    --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
-    "$primary_image@$digest"
-)"
-[[ "$actual_label_revision" == "$RELEASE_SHA" ]]
-actual_label_source="$(
-  docker image inspect \
-    --format '{{ index .Config.Labels "org.opencontainers.image.source" }}' \
-    "$primary_image@$digest"
-)"
-[[ "$actual_label_source" == "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" ]]
-bash "$script_directory/test-container-runtime.sh" \
-  "$primary_image@$digest" "$release_source_root"
+verify_image_runtime "$digest"
 
 python3 "$script_directory/build_image_release_evidence.py" finalize \
   --frozen "$assets_directory/frozen-release-evidence.json" \
@@ -534,34 +543,15 @@ verify_attestations "$digest"
 
 refresh_release
 [[ "$(jq -r '.draft' "$release_json")" == true ]] || {
-  verify_remote_release "$work_directory/published-concurrently" "$digest"
-  echo "Release $tag was published concurrently and passed complete readback"
+  verify_public_release "$digest"
+  echo "Release $tag was published concurrently and passed OCI-only readback"
   exit 0
 }
-LC_ALL=C comm -13 "$expected_names" "$remote_names" > "$work_directory/unexpected-assets"
-[[ ! -s "$work_directory/unexpected-assets" ]] || {
-  echo "Draft Release contains unexpected assets:" >&2
-  sed "s/^/  /" "$work_directory/unexpected-assets" >&2
-  exit 1
-}
-while IFS= read -r name; do
-  local_path="$assets_directory/$name"
-  if grep -Fxq "$name" "$remote_names"; then
-    remote_path="$work_directory/existing-$name"
-    download_asset "$name" "$remote_path"
-    if ! cmp -s "$local_path" "$remote_path"; then
-      delete_asset "$name"
-      GH_TOKEN="$RELEASE_POLICY_TOKEN" gh release upload "$tag" "$local_path" \
-        --repo "$GITHUB_REPOSITORY"
-    fi
-  else
-    GH_TOKEN="$RELEASE_POLICY_TOKEN" gh release upload "$tag" "$local_path" \
-      --repo "$GITHUB_REPOSITORY"
-  fi
-done < "$expected_names"
-
-refresh_release
-verify_remote_release "$work_directory/verified-draft" "$digest"
+assert_no_release_assets Draft
+{
+  echo "Files selected for GitHub Release:"
+  echo "  (none; the OCI digest in Release Notes is the final server product reference)"
+} | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
 # Repeat authorization immediately before the irreversible draft-to-release mutation.
 EXPECTED_VERSION="$VERSION" bash "$script_directory/manage-release.sh" validate-publish >/dev/null
@@ -577,7 +567,7 @@ if [[ "$(jq -r '.draft' "$release_json")" == true ]]; then
   if [[ -z "$existing" ]]; then
     notes="$work_directory/release-notes.md"
     {
-      printf "%s\n\n## Container image\n\n" "$body"
+      printf "%s\n\n## Container image (final product)\n\n" "$body"
       for image in "$dockerhub_image" "$ghcr_image"; do
         [[ -n "$image" ]] || continue
         printf -- "- \`%s@%s\`\n" "$image" "$digest"
@@ -587,6 +577,8 @@ if [[ "$(jq -r '.draft' "$release_json")" == true ]]; then
     } > "$notes"
     GH_TOKEN="$RELEASE_POLICY_TOKEN" gh release edit "$tag" \
       --repo "$GITHUB_REPOSITORY" --notes-file "$notes"
+  else
+    verify_release_digest_reference "$digest"
   fi
   GH_TOKEN="$RELEASE_POLICY_TOKEN" gh release edit "$tag" \
     --repo "$GITHUB_REPOSITORY" --draft=false
@@ -601,10 +593,12 @@ refresh_release
 body="$(jq -r '.body // ""' "$release_json")"
 [[ "$(grep -Fxc "<!-- container-digest:$digest -->" <<< "$body" || true)" == 1 ]] ||
   { echo "Published Release lacks its exact container digest" >&2; exit 1; }
-verify_remote_release "$work_directory/published" "$digest"
+verify_public_release "$digest"
 for image in "$dockerhub_image" "$ghcr_image"; do
   [[ -n "$image" ]] || continue
   verify_registry_aliases "$image" "$digest"
   verify_image_signature "$image" "$digest" >/dev/null
 done
+verify_attestations "$digest"
+verify_image_runtime "$digest"
 echo "Published and independently re-read $tag at $digest"

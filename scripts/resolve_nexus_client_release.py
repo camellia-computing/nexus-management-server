@@ -5,13 +5,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.util
 import json
 import os
 import re
 import subprocess
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 
@@ -21,6 +19,8 @@ SEMVER = re.compile(
     r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
 )
 LOGICAL_IDS = ("nexus-client", "nexus-management")
+ASSET_DIGEST = re.compile(r"^sha256:([0-9a-f]{64})$")
+CHECKSUM_LINE = re.compile(r"^([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._-]{0,199})$")
 
 
 def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -37,16 +37,6 @@ def parse_json(value: str | bytes, label: str) -> Any:
         return json.loads(value, object_pairs_hook=unique_object)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ValueError(f"{label} is not valid JSON") from error
-
-
-def load_validator() -> ModuleType:
-    path = Path(__file__).with_name("validate-release-evidence.py")
-    spec = importlib.util.spec_from_file_location("release_evidence_validator", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("unable to load release evidence validator")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def run_gh_json(*arguments: str) -> Any:
@@ -103,10 +93,8 @@ def flatten_pages(value: Any) -> list[dict[str, Any]]:
 
 def completed_candidates(
     releases: Any, release_app_login: str
-) -> list[tuple[tuple[int, int, int], dict[str, Any], dict[str, Any]]]:
-    candidates: list[
-        tuple[tuple[int, int, int], dict[str, Any], dict[str, Any]]
-    ] = []
+) -> list[tuple[tuple[int, int, int], dict[str, Any]]]:
+    candidates: list[tuple[tuple[int, int, int], dict[str, Any]]] = []
     stable_tags: set[str] = set()
     for release in flatten_pages(releases):
         tag = release.get("tag_name")
@@ -118,6 +106,7 @@ def completed_candidates(
         commit = release.get("target_commitish")
         body = release.get("body")
         assets = release.get("assets")
+        author = release.get("author")
         if (
             release.get("draft") is not False
             or release.get("prerelease") is not False
@@ -125,7 +114,8 @@ def completed_candidates(
             or not isinstance(commit, str)
             or not COMMIT.fullmatch(commit)
             or not isinstance(body, str)
-            or release.get("author", {}).get("login") != release_app_login
+            or not isinstance(author, dict)
+            or author.get("login") != release_app_login
             or not isinstance(release.get("id"), int)
             or isinstance(release.get("id"), bool)
             or release["id"] < 1
@@ -135,46 +125,117 @@ def completed_candidates(
         marker = f"<!-- release-complete:{commit} -->"
         if body.splitlines().count(marker) != 1:
             continue
-        evidence_assets = [
-            asset
-            for asset in assets
-            if isinstance(asset, dict)
-            and asset.get("name") == "release-evidence.json"
-            and isinstance(asset.get("id"), int)
-            and not isinstance(asset.get("id"), bool)
-            and asset["id"] > 0
-        ]
-        if len(evidence_assets) != 1:
-            continue
         candidates.append(
             (
                 tuple(int(match.group(index)) for index in range(1, 4)),
                 release,
-                evidence_assets[0],
             )
         )
     return sorted(candidates, key=lambda item: item[0])
 
 
-def validate_client_evidence(
-    value: Any, *, version: str, commit: str
-) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise ValueError("Nexus client release evidence must be an object")
-    load_validator().validate_release_evidence(value)
-    if (
-        value.get("repository") != "nexus-client"
-        or value.get("version") != version
-        or value.get("release_kind") != "formal"
-        or value.get("source", {}).get("commit") != commit
-        or value.get("source", {}).get("ref") != f"refs/tags/v{version}"
-        or not value.get("files")
-        or value.get("images") != []
-    ):
+def product_asset_names(version: str) -> tuple[str, ...]:
+    prefix = f"camellia-nexus-{version}"
+    return (
+        f"{prefix}-linux-x64.AppImage",
+        f"{prefix}-linux-x64.deb",
+        f"{prefix}-linux-x64.tar.gz",
+        f"{prefix}-macos-arm64.dmg",
+        f"{prefix}-macos-arm64.tar.gz",
+        f"{prefix}-macos-x64.dmg",
+        f"{prefix}-macos-x64.tar.gz",
+        f"{prefix}-windows-x64.msi",
+        f"{prefix}-windows-x64-portable.zip",
+    )
+
+
+def openpgp_asset_names(version: str) -> tuple[str, ...]:
+    prefix = f"camellia-nexus-{version}-linux-x64"
+    return (
+        f"{prefix}.AppImage.asc",
+        f"{prefix}.deb.asc",
+        f"{prefix}.tar.gz.asc",
+        "RELEASE-SIGNING-KEY.asc",
+    )
+
+
+def validate_public_assets(
+    assets: Any, version: str
+) -> tuple[dict[str, dict[str, Any]], bool]:
+    if not isinstance(assets, list):
+        raise ValueError("Nexus client Release assets must be an array")
+    by_name: dict[str, dict[str, Any]] = {}
+    for asset in assets:
+        if not isinstance(asset, dict) or not isinstance(asset.get("name"), str):
+            raise ValueError("Nexus client Release contains invalid asset metadata")
+        name = asset["name"]
+        asset_id = asset.get("id")
+        digest = asset.get("digest")
+        if name in by_name:
+            raise ValueError(f"Nexus client Release repeats asset {name}")
+        if (
+            not isinstance(asset_id, int)
+            or isinstance(asset_id, bool)
+            or asset_id < 1
+            or not isinstance(digest, str)
+            or not ASSET_DIGEST.fullmatch(digest)
+        ):
+            raise ValueError(f"Nexus client Release asset metadata is incomplete: {name}")
+        by_name[name] = asset
+
+    products = set(product_asset_names(version))
+    unsigned = products | {"SHA256SUMS"}
+    signed = unsigned | set(openpgp_asset_names(version))
+    actual = set(by_name)
+    if actual == unsigned:
+        openpgp = False
+    elif actual == signed:
+        openpgp = True
+    else:
+        missing = sorted(unsigned - actual)
+        unexpected = sorted(actual - signed)
+        partial_openpgp = sorted((actual & set(openpgp_asset_names(version))))
+        details = []
+        if missing:
+            details.append(f"missing={','.join(missing)}")
+        if unexpected:
+            details.append(f"unexpected={','.join(unexpected)}")
+        if partial_openpgp and actual != signed:
+            details.append(f"partial-openpgp={','.join(partial_openpgp)}")
         raise ValueError(
-            "Nexus client evidence does not identify the selected formal release"
+            "Nexus client Release does not contain an exact public asset set"
+            + (f" ({'; '.join(details)})" if details else "")
         )
-    return value
+    return by_name, openpgp
+
+
+def parse_sha256sums(payload: bytes, version: str) -> dict[str, str]:
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("Nexus client SHA256SUMS is not UTF-8") from error
+    if not text.endswith("\n") or "\r" in text or "\x00" in text:
+        raise ValueError("Nexus client SHA256SUMS is not canonical text")
+    checksums: dict[str, str] = {}
+    for line in text.splitlines():
+        match = CHECKSUM_LINE.fullmatch(line)
+        if match is None:
+            raise ValueError("Nexus client SHA256SUMS contains an invalid line")
+        digest, name = match.groups()
+        if name in checksums:
+            raise ValueError(f"Nexus client SHA256SUMS repeats {name}")
+        checksums[name] = digest
+    expected = set(product_asset_names(version))
+    if set(checksums) != expected:
+        raise ValueError("Nexus client SHA256SUMS must cover exactly nine public packages")
+    return checksums
+
+
+def api_sha256(asset: dict[str, Any]) -> str:
+    match = ASSET_DIGEST.fullmatch(str(asset.get("digest", "")))
+    if match is None:
+        raise ValueError(f"Nexus client asset has no SHA-256 digest: {asset.get('name')}")
+    return match.group(1)
 
 
 def resolve(args: argparse.Namespace) -> dict[str, Any]:
@@ -198,7 +259,7 @@ def resolve(args: argparse.Namespace) -> dict[str, Any]:
     candidates = completed_candidates(releases, args.release_app_login)
     if not candidates:
         raise ValueError("no completed immutable Nexus client release is available")
-    _, release, evidence_asset = candidates[-1]
+    _, release = candidates[-1]
     tag = release["tag_name"]
     version = tag.removeprefix("v")
     commit = release["target_commitish"]
@@ -210,21 +271,27 @@ def resolve(args: argparse.Namespace) -> dict[str, Any]:
         or tag_ref.get("object", {}).get("sha") != commit
     ):
         raise ValueError("selected Nexus client tag is not a lightweight exact commit ref")
-    evidence_bytes = run_gh_bytes(
+    assets, openpgp = validate_public_assets(release["assets"], version)
+    checksum_asset = assets["SHA256SUMS"]
+    checksum_bytes = run_gh_bytes(
         "-H",
         "Accept: application/octet-stream",
-        f"repos/{target_repository}/releases/assets/{evidence_asset['id']}",
+        f"repos/{target_repository}/releases/assets/{checksum_asset['id']}",
     )
-    evidence = validate_client_evidence(
-        parse_json(evidence_bytes, "Nexus client release evidence"),
-        version=version,
-        commit=commit,
-    )
+    checksum_sha = hashlib.sha256(checksum_bytes).hexdigest()
+    if checksum_sha != api_sha256(checksum_asset):
+        raise ValueError("Downloaded Nexus client SHA256SUMS differs from its API digest")
+    checksums = parse_sha256sums(checksum_bytes, version)
+    for name, expected in checksums.items():
+        if api_sha256(assets[name]) != expected:
+            raise ValueError(f"Nexus client package digest differs from SHA256SUMS: {name}")
     return {
         "target_repository": target_repository,
         "release": release,
-        "evidence": evidence,
-        "evidence_bytes": evidence_bytes,
+        "assets": assets,
+        "checksums": checksums,
+        "checksum_sha": checksum_sha,
+        "openpgp": openpgp,
         "version": version,
         "tag": tag,
         "commit": commit,
@@ -235,13 +302,19 @@ def write_outputs(args: argparse.Namespace, resolved: dict[str, Any]) -> None:
     output = args.output_directory
     if not output.is_dir() or output.is_symlink():
         raise ValueError("output directory must be an existing real directory")
-    evidence_path = output / "nexus-client-release-evidence.json"
     metadata_path = output / "nexus-client-release.json"
     dependencies_path = output / "dependencies.json"
-    evidence_path.write_bytes(resolved["evidence_bytes"])
-    evidence_sha = hashlib.sha256(resolved["evidence_bytes"]).hexdigest()
+    packages = [
+        {"name": name, "sha256": resolved["checksums"][name]}
+        for name in product_asset_names(resolved["version"])
+    ]
+    openpgp_files = [
+        {"name": name, "sha256": api_sha256(resolved["assets"][name])}
+        for name in openpgp_asset_names(resolved["version"])
+        if resolved["openpgp"]
+    ]
     metadata = {
-        "schema_version": 1,
+        "schema_version": 2,
         "repository": "nexus-client",
         "version": resolved["version"],
         "tag": resolved["tag"],
@@ -249,9 +322,17 @@ def write_outputs(args: argparse.Namespace, resolved: dict[str, Any]) -> None:
         "release_id": resolved["release"]["id"],
         "immutable": True,
         "complete": True,
-        "release_evidence": {
-            "name": evidence_path.name,
-            "sha256": evidence_sha,
+        "public_release": {
+            "asset_count": len(resolved["assets"]),
+            "sha256sums": {
+                "name": "SHA256SUMS",
+                "sha256": resolved["checksum_sha"],
+            },
+            "packages": packages,
+            "openpgp": {
+                "enabled": resolved["openpgp"],
+                "files": openpgp_files,
+            },
         },
     }
     dependency = {

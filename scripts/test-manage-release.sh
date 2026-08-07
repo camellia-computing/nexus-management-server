@@ -139,6 +139,15 @@ grep -Fq 'git -C "$release_source_root" rev-parse --verify HEAD' "$publish_scrip
   fail "runtime helpers are not bound to the authorized release checkout"
 grep -Fq '"$primary_image@$digest" "$release_source_root"' "$publish_script" ||
   fail "relocated runtime verification does not receive the release source root"
+if grep -Fq 'gh release upload' "$publish_script"; then
+  fail "OCI-only server publication still uploads file assets"
+fi
+grep -Fq 'assert_no_release_assets Draft' "$publish_script" ||
+  fail "server publication does not reject file assets in the managed draft"
+grep -Fq 'verify_public_release "$digest"' "$publish_script" ||
+  fail "server publication does not re-read the zero-asset public contract"
+grep -Fq '(none; the OCI digest in Release Notes is the final server product reference)' "$publish_script" ||
+  fail "server publication does not expose its OCI-only asset selection"
 if grep -Fq 'sha-${GITHUB_SHA::12}' "$publish_script" ||
    grep -Fq 'for alias in "v$VERSION"' "$publish_script"; then
   fail "publication contains a non-canonical immutable image alias"
