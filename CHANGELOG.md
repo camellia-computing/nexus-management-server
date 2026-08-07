@@ -3,6 +3,13 @@
 All notable changes to the Camellia Nexus Management Server will be recorded
 here from the first commercial release onward.
 
+## [1.0.2] - 2026-08-07
+
+### Fixed
+
+- grant worker lock columns and align dashboard timeline
+
+
 ## [1.0.1] - 2026-08-05
 
 ### Fixed
