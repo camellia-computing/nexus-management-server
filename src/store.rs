@@ -1,5 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    path::Path,
+    str::FromStr,
     sync::{Arc, RwLock},
     time::Duration,
 };
@@ -8,13 +10,15 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sqlx::{
     PgPool, Postgres, Row, Transaction,
-    postgres::{PgPoolOptions, PgRow},
+    postgres::{PgConnectOptions, PgPoolOptions, PgRow},
 };
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     admin_app::{AdminAppError, AdminAppResult, MutationContext},
     admin_auth::{AdminPermission, authorize_admin_mutation},
     admin_operation::{self, AdminOperationClaim},
+    config::DatabaseConnectionConfig,
     contracts::{DeviceState, Plan},
     crypto::stable_log_reference,
     domain::{
@@ -1462,6 +1466,26 @@ pub struct ActivationCodeBatchCommit {
 }
 
 impl PostgresRepository {
+    pub async fn connect_config(
+        database: &DatabaseConnectionConfig,
+        max_connections: u32,
+        acquire_timeout: Duration,
+    ) -> Result<Self> {
+        let mut options = PgConnectOptions::from_str(&database.database_url)
+            .map_err(|error| database_error("postgres_connect_options", error))?;
+        if let Some(path) = &database.password_file {
+            let password = read_database_password(path)?;
+            options = options.password(&password);
+        }
+        let pool = PgPoolOptions::new()
+            .max_connections(max_connections)
+            .acquire_timeout(acquire_timeout)
+            .connect_with(options)
+            .await
+            .map_err(|error| database_error("postgres_connect", error))?;
+        Ok(Self { pool })
+    }
+
     pub async fn connect(
         database_url: &str,
         max_connections: u32,
@@ -2129,6 +2153,43 @@ impl PostgresRepository {
         .map_err(|error| database_error("postgres_audit_events_list", error))?;
         rows.into_iter().map(row_audit_event).collect()
     }
+}
+
+fn read_database_password(path: &Path) -> Result<Zeroizing<String>> {
+    let bytes = crate::secret_file::read_secret_file(path)
+        .map_err(|_| database_password_error("unreadable_or_invalid_file"))?;
+    let mut password = match String::from_utf8(bytes.to_vec()) {
+        Ok(password) => Zeroizing::new(password),
+        Err(error) => {
+            let mut invalid_bytes = error.into_bytes();
+            invalid_bytes.zeroize();
+            return Err(database_password_error("invalid_utf8"));
+        }
+    };
+    if password.ends_with('\n') {
+        password.pop();
+        if password.ends_with('\r') {
+            password.pop();
+        }
+    }
+    if password.is_empty()
+        || password
+            .chars()
+            .any(|character| matches!(character, '\0' | '\r' | '\n'))
+    {
+        return Err(database_password_error("empty_or_multiline_value"));
+    }
+    Ok(password)
+}
+
+fn database_password_error(reason: &'static str) -> ApiError {
+    tracing::error!(
+        stage = "database_password_file",
+        error_kind = "configuration",
+        reason,
+        "database password file is invalid"
+    );
+    ApiError::Database
 }
 
 #[async_trait]
@@ -4293,9 +4354,40 @@ fn activation_code_error(code: &ActivationCodeRecord, now: i64) -> ApiError {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::fs;
 
     use super::*;
     use crate::contracts::DeviceRegistrationMetadata;
+
+    #[test]
+    fn database_password_file_normalizes_one_line_ending_without_exposing_content() {
+        let path = std::env::temp_dir().join(format!(
+            "camellia-database-password-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::write(&path, b"password-value\r\n").expect("write password fixture");
+        let password = read_database_password(&path).expect("read password fixture");
+        assert_eq!(&*password, "password-value");
+        fs::remove_file(path).expect("remove password fixture");
+    }
+
+    #[test]
+    fn database_password_file_rejects_empty_and_multiline_values() {
+        for bytes in [
+            b"".as_slice(),
+            b"line-one\nline-two".as_slice(),
+            b"bad\0value".as_slice(),
+            b"bad\xffvalue".as_slice(),
+        ] {
+            let path = std::env::temp_dir().join(format!(
+                "camellia-invalid-database-password-{}",
+                uuid::Uuid::new_v4()
+            ));
+            fs::write(&path, bytes).expect("write invalid password fixture");
+            assert!(read_database_password(&path).is_err());
+            fs::remove_file(path).expect("remove invalid password fixture");
+        }
+    }
 
     #[test]
     fn audit_metadata_preserves_values_without_failing_on_nullable_legacy_fields() {

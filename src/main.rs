@@ -5,7 +5,7 @@ use camellia_nexus_management_server::{
     ServerConfig,
     billing::CommercialRepository,
     cli_help::{admin_help, root_help, runtime_help, serve_help, version},
-    config::{Environment, LoggingConfig},
+    config::{Environment, LoggingConfig, database_connection_config_from_env},
     limited_listener::{BoundedListener, connection_limit},
     metrics::{BackgroundOutcome, MetricsServer, RuntimeMetrics, RuntimeRole},
     router_with_metrics,
@@ -266,9 +266,9 @@ async fn run(action: CliAction) -> Result<(), Box<dyn std::error::Error>> {
     }
     if action == CliAction::Migrate {
         let environment = camellia_nexus_management_server::config::Environment::from_env()?;
-        let database_url = std::env::var("DATABASE_URL")?;
+        let database = database_connection_config_from_env(environment)?;
         let repository =
-            PostgresRepository::connect(&database_url, 1, std::time::Duration::from_secs(15))
+            PostgresRepository::connect_config(&database, 1, std::time::Duration::from_secs(15))
                 .await?;
         repository.migrate().await?;
         let grants_applied =
@@ -605,14 +605,14 @@ async fn repository(
                 None,
             ))
         }
-        camellia_nexus_management_server::config::StorageConfig::Postgres { database_url } => {
+        camellia_nexus_management_server::config::StorageConfig::Postgres { database } => {
             tracing::info!(
                 max_connections = config.max_database_connections,
                 migrate = config.migrate_database,
                 "initializing postgres license repository"
             );
-            let repository = PostgresRepository::connect(
-                database_url,
+            let repository = PostgresRepository::connect_config(
+                database,
                 config.max_database_connections,
                 config.database_acquire_timeout,
             )

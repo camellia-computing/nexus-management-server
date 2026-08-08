@@ -15,7 +15,9 @@ use crate::{
         PaymentReviewDecision,
     },
     cli_help::{admin_help, canonical_admin_help_topic, is_admin_group},
-    config::{Environment, time_max_forward_jump_seconds_from_env},
+    config::{
+        Environment, database_connection_config_from_env, time_max_forward_jump_seconds_from_env,
+    },
     contracts::{DeviceState, Plan},
     domain::{AccountState, ActivationCodeStatus, LicenseStatus},
     error::ApiError,
@@ -495,13 +497,12 @@ fn parse_output_mode(value: &str) -> AdminResult<OutputMode> {
 }
 
 async fn admin_repository() -> AdminResult<PostgresRepository> {
-    let database_url =
-        env::var("DATABASE_URL").map_err(|_| "DATABASE_URL is required for admin commands")?;
+    let environment = Environment::from_env()?;
+    let database = database_connection_config_from_env(environment)?;
     let max_connections = env::var("CAMELLIA_NEXUS_DATABASE_MAX_CONNECTIONS")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(8);
-    let environment = Environment::from_env()?;
     let migrate = env_bool(
         "CAMELLIA_NEXUS_DATABASE_MIGRATE",
         environment == Environment::Development,
@@ -514,7 +515,7 @@ async fn admin_repository() -> AdminResult<PostgresRepository> {
             .unwrap_or(5),
     );
     let repository =
-        PostgresRepository::connect(&database_url, max_connections, acquire_timeout).await?;
+        PostgresRepository::connect_config(&database, max_connections, acquire_timeout).await?;
     if migrate {
         repository.migrate().await?;
     }

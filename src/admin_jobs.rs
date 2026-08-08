@@ -24,7 +24,10 @@ use crate::{
         EvidenceScanner, ObjectStorageConfig, ObjectStorageError, ObjectStorageService,
         StagingReconciliation, StoredObjectStatus,
     },
-    config::{Environment, database_pool_config_from_env, time_max_forward_jump_seconds_from_env},
+    config::{
+        Environment, database_connection_config_from_env, database_pool_config_from_env,
+        time_max_forward_jump_seconds_from_env,
+    },
     contracts::DeviceState,
     crypto::{random_id, sha256_hex, stable_log_reference},
     domain::{AccountState, AuditEventRecord, LicenseStatus},
@@ -1192,10 +1195,10 @@ async fn insert_job_cancellation_audit(
 pub async fn run_admin_worker() -> Result<(), Box<dyn std::error::Error>> {
     let environment = Environment::from_env()?;
     let runtime_metrics = RuntimeMetrics::new(RuntimeRole::AdminWorker);
-    let database_url = env::var("DATABASE_URL")?;
+    let database = database_connection_config_from_env(environment)?;
     let database_pool = database_pool_config_from_env()?;
-    let repository = PostgresRepository::connect(
-        &database_url,
+    let repository = PostgresRepository::connect_config(
+        &database,
         database_pool.max_connections,
         database_pool.acquire_timeout,
     )

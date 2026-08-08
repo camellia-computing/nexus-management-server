@@ -1,4 +1,4 @@
-use std::{env, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{env, fmt, net::SocketAddr, path::PathBuf, time::Duration};
 
 use semver::Version;
 use thiserror::Error;
@@ -65,6 +65,25 @@ pub struct DatabasePoolConfig {
     pub acquire_timeout: Duration,
 }
 
+/// PostgreSQL connection inputs.  The password itself is deliberately not
+/// stored in configuration; it is read by the repository immediately before
+/// creating the pool.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DatabaseConnectionConfig {
+    pub(crate) database_url: String,
+    pub(crate) password_file: Option<PathBuf>,
+}
+
+impl fmt::Debug for DatabaseConnectionConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DatabaseConnectionConfig")
+            .field("database_url", &redacted_database_url(&self.database_url))
+            .field("password_file", &self.password_file)
+            .finish()
+    }
+}
+
 impl Default for HttpServerConfig {
     fn default() -> Self {
         Self {
@@ -96,7 +115,7 @@ pub enum Environment {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StorageConfig {
     Memory,
-    Postgres { database_url: String },
+    Postgres { database: DatabaseConnectionConfig },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -577,18 +596,73 @@ fn storage_from_env(environment: Environment) -> ConfigResult<StorageConfig> {
             "in-memory storage is forbidden in production",
         )),
         "memory" => Ok(StorageConfig::Memory),
-        "postgres" | "postgresql" => {
-            let database_url = env::var("DATABASE_URL")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| ConfigError::new("DATABASE_URL", "is required for PostgreSQL"))?;
-            Ok(StorageConfig::Postgres { database_url })
-        }
+        "postgres" | "postgresql" => Ok(StorageConfig::Postgres {
+            database: database_connection_config_from_env(environment)?,
+        }),
         _ => Err(ConfigError::new(
             "CAMELLIA_NEXUS_LICENSE_STORAGE",
             "expected memory or postgres",
         )),
     }
+}
+
+pub fn database_connection_config_from_env(
+    environment: Environment,
+) -> ConfigResult<DatabaseConnectionConfig> {
+    database_connection_config_from_values(
+        environment,
+        env::var("DATABASE_URL").ok(),
+        env::var("DATABASE_PASSWORD_FILE").ok(),
+    )
+}
+
+fn database_connection_config_from_values(
+    environment: Environment,
+    database_url: Option<String>,
+    password_file: Option<String>,
+) -> ConfigResult<DatabaseConnectionConfig> {
+    let database_url = database_url
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ConfigError::new("DATABASE_URL", "is required for PostgreSQL"))?;
+    let parsed = Url::parse(&database_url)
+        .map_err(|_| ConfigError::new("DATABASE_URL", "must be a valid PostgreSQL URL"))?;
+    if !matches!(parsed.scheme(), "postgres" | "postgresql") {
+        return Err(ConfigError::new(
+            "DATABASE_URL",
+            "must use the postgres or postgresql scheme",
+        ));
+    }
+    let password_file = password_file
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    if parsed.password().is_some() && environment == Environment::Production {
+        return Err(ConfigError::new(
+            "DATABASE_URL",
+            "must not contain a password in production; use DATABASE_PASSWORD_FILE",
+        ));
+    }
+    if parsed.password().is_some() && password_file.is_some() {
+        return Err(ConfigError::new(
+            "DATABASE_PASSWORD_FILE",
+            "must not be combined with a password embedded in DATABASE_URL",
+        ));
+    }
+    Ok(DatabaseConnectionConfig {
+        database_url,
+        password_file,
+    })
+}
+
+fn redacted_database_url(value: &str) -> String {
+    let Ok(mut parsed) = Url::parse(value) else {
+        return "<invalid-database-url>".to_owned();
+    };
+    if parsed.password().is_some() {
+        let _ = parsed.set_password(Some("[redacted]"));
+    }
+    parsed.to_string()
 }
 
 fn oauth_from_env(environment: Environment) -> ConfigResult<OAuthServerConfig> {
@@ -816,6 +890,84 @@ fn ephemeral_development_key() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn database_connection_configuration_separates_production_passwords() {
+        let production = database_connection_config_from_values(
+            Environment::Production,
+            Some("postgres://nexus_public@db.example/nexus".into()),
+            Some("/run/secrets/database-password".into()),
+        )
+        .expect("production password file configuration");
+        assert_eq!(
+            production.password_file,
+            Some(PathBuf::from("/run/secrets/database-password"))
+        );
+        assert!(
+            database_connection_config_from_values(
+                Environment::Production,
+                Some("postgres://nexus_public:embedded@db.example/nexus".into()),
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            database_connection_config_from_values(
+                Environment::Production,
+                Some("postgres://nexus_public:embedded@db.example/nexus".into()),
+                Some("/run/secrets/database-password".into()),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn database_connection_configuration_keeps_development_compatibility() {
+        let legacy = database_connection_config_from_values(
+            Environment::Development,
+            Some("postgres://nexus_public:embedded@127.0.0.1/nexus".into()),
+            None,
+        )
+        .expect("development embedded password compatibility");
+        assert!(legacy.password_file.is_none());
+        assert!(
+            database_connection_config_from_values(
+                Environment::Development,
+                Some("postgres://nexus_public:embedded@127.0.0.1/nexus".into()),
+                Some("password-file".into()),
+            )
+            .is_err()
+        );
+        assert!(
+            database_connection_config_from_values(
+                Environment::Development,
+                Some("mysql://nexus_public@127.0.0.1/nexus".into()),
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            database_connection_config_from_values(
+                Environment::Development,
+                Some("  ".into()),
+                None,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn database_connection_debug_redacts_embedded_passwords() {
+        let config = database_connection_config_from_values(
+            Environment::Development,
+            Some("postgres://nexus_public:secret-value@127.0.0.1/nexus".into()),
+            None,
+        )
+        .expect("valid development database URL");
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("secret-value"));
+        assert!(debug.contains("database_url"));
+    }
 
     #[test]
     fn database_pool_configuration_rejects_invalid_and_zero_values() {
