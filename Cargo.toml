@@ -1,6 +1,6 @@
 [package]
 name = "camellia-nexus-management-server"
-version = "1.0.3"
+version = "1.0.4"
 edition = "2024"
 license = "LicenseRef-Camellia-Proprietary-1.0"
 authors = ["Camellia Computing"]

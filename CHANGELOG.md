@@ -3,6 +3,13 @@
 All notable changes to the Camellia Nexus Management Server will be recorded
 here from the first commercial release onward.
 
+## [1.0.4] - 2026-08-08
+
+### Fixed
+
+- isolate database credentials from process metadata
+
+
 ## [1.0.3] - 2026-08-08
 
 ### Fixed
