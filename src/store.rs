@@ -4361,10 +4361,7 @@ mod tests {
 
     #[test]
     fn database_password_file_normalizes_one_line_ending_without_exposing_content() {
-        let path = std::env::temp_dir().join(format!(
-            "camellia-database-password-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let path = std::env::temp_dir().join("camellia-database-password-boundary-test");
         fs::write(&path, b"password-value\r\n").expect("write password fixture");
         let password = read_database_password(&path).expect("read password fixture");
         assert_eq!(&*password, "password-value");
@@ -4379,10 +4376,7 @@ mod tests {
             b"bad\0value".as_slice(),
             b"bad\xffvalue".as_slice(),
         ] {
-            let path = std::env::temp_dir().join(format!(
-                "camellia-invalid-database-password-{}",
-                uuid::Uuid::new_v4()
-            ));
+            let path = std::env::temp_dir().join("camellia-invalid-database-password-test");
             fs::write(&path, bytes).expect("write invalid password fixture");
             assert!(read_database_password(&path).is_err());
             fs::remove_file(path).expect("remove invalid password fixture");
