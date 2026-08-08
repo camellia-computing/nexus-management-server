@@ -795,8 +795,7 @@ for container in "$postgres" "$public" "$admin" "$worker"; do
   done
 done
 for container in "$public" "$admin" "$worker"; do
-  process_metadata="$(docker run --rm --pid "container:$container" --entrypoint sh \
-    "$postgres_image" -ec '
+  process_metadata="$(docker exec --user 10001:10001 "$container" sh -ec '
       for file in /proc/[0-9]*/cmdline /proc/[0-9]*/environ; do
         test -r "$file" || continue
         tr "\000" "\n" <"$file"
