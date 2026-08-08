@@ -40,11 +40,22 @@ users=$(sed -n 's/^User=//p' "$migrate" "$public" "$admin_web" "$admin_worker" |
 assert_contains "$migrate" 'Type=oneshot'
 assert_contains "$migrate" 'ExecStart=/usr/local/bin/camellia-nexus-management-server migrate'
 assert_contains "$migrate" 'EnvironmentFile=/etc/camellia-nexus/migrate.env'
+assert_contains "$migrate" 'LoadCredential=database_password:/etc/camellia-nexus/secrets/database/migrate/password'
+assert_contains "$migrate" 'Environment=DATABASE_PASSWORD_FILE=%d/database_password'
 assert_contains "$migrate" 'InaccessiblePaths=-/etc/camellia-nexus/secrets -/var/lib/camellia-nexus'
 assert_contains "$migrate" 'RemainAfterExit=yes'
 assert_contains "$public" 'InaccessiblePaths=-/etc/camellia-nexus/secrets/admin -/var/lib/camellia-nexus/admin-objects'
+assert_contains "$public" 'LoadCredential=database_password:/etc/camellia-nexus/secrets/database/public/password'
+assert_contains "$public" 'Environment=DATABASE_PASSWORD_FILE=%d/database_password'
+assert_contains "$public" 'InaccessiblePaths=-/etc/camellia-nexus/secrets/database'
 assert_contains "$admin_web" 'InaccessiblePaths=-/etc/camellia-nexus/secrets/public'
+assert_contains "$admin_web" 'LoadCredential=database_password:/etc/camellia-nexus/secrets/database/admin-web/password'
+assert_contains "$admin_web" 'Environment=DATABASE_PASSWORD_FILE=%d/database_password'
+assert_contains "$admin_web" 'InaccessiblePaths=-/etc/camellia-nexus/secrets/database'
 assert_contains "$admin_worker" 'InaccessiblePaths=-/etc/camellia-nexus/secrets/public'
+assert_contains "$admin_worker" 'LoadCredential=database_password:/etc/camellia-nexus/secrets/database/admin-worker/password'
+assert_contains "$admin_worker" 'Environment=DATABASE_PASSWORD_FILE=%d/database_password'
+assert_contains "$admin_worker" 'InaccessiblePaths=-/etc/camellia-nexus/secrets/database'
 assert_contains "$admin_web" 'ReadWritePaths=/var/lib/camellia-nexus/admin-objects'
 assert_contains "$admin_worker" 'ReadWritePaths=/var/lib/camellia-nexus/admin-objects'
 assert_contains "$admin_web" 'SupplementaryGroups=camellia-nexus-admin'
@@ -70,6 +81,9 @@ for file in \
   "$repo_root/deploy/public-api.env.example" \
   "$repo_root/deploy/admin-web.env.example" \
   "$repo_root/deploy/admin-worker.env.example"; do
+  if grep -Eq '^DATABASE_URL=postgres://[^@/]+:[^@]*@' "$file"; then
+    fail "$(basename "$file") embeds a database password in DATABASE_URL"
+  fi
   assert_contains "$file" 'DATABASE_URL=postgres://'
 done
 assert_contains "$repo_root/deploy/migrate.env.example" 'CAMELLIA_NEXUS_DATABASE_PUBLIC_ROLE='
