@@ -3,6 +3,15 @@
 All notable changes to the Camellia Nexus Management Server will be recorded
 here from the first commercial release onward.
 
+## [1.0.3] - 2026-08-08
+
+### Fixed
+
+- publish server as OCI-only release (#17)
+
+- update nanoid security patch (#18)
+
+
 ## [1.0.2] - 2026-08-07
 
 ### Fixed
