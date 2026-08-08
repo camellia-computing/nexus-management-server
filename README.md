@@ -25,7 +25,8 @@ Camellia Nexus Management Server 是 Camellia Nexus 桌面客户端的生产授�
 CAMELLIA_NEXUS_LICENSE_ENV=production
 CAMELLIA_NEXUS_LICENSE_BIND=0.0.0.0:8088
 CAMELLIA_NEXUS_LICENSE_STORAGE=postgres
-DATABASE_URL=postgres://nexus_public:replace-with-url-safe-secret@postgres:5432/nexus
+DATABASE_URL=postgres://nexus_public@postgres:5432/nexus
+DATABASE_PASSWORD_FILE=/run/secrets/database-public-password
 CAMELLIA_NEXUS_LICENSE_ISSUER=https://license.example.com
 CAMELLIA_NEXUS_LICENSE_AUDIENCE=camellia-nexus-desktop
 CAMELLIA_NEXUS_LICENSE_KEY_ID=entitlement-2026-00
@@ -271,7 +272,8 @@ OAuth authorization code 由服务端签发，短期有效，并绑定 PKCE chal
 
 ### Admin CLI
 
-服务端二进制内置生产管理命令。Admin 命令需要 `DATABASE_URL`。所有会改变账号、授权、授权码或设备的命令都要求可追责的操作者和原因；发码使用 `--issued-by` 作为 actor，其余变更使用 `--actor`，并统一要求 `--reason`。
+服务端二进制内置生产管理命令。Admin 命令需要 `DATABASE_URL`；生产环境必须通过
+`DATABASE_PASSWORD_FILE` 提供密码，内嵌密码 URL 会失败关闭。所有会改变账号、授权、授权码或设备的命令都要求可追责的操作者和原因；发码使用 `--issued-by` 作为 actor，其余变更使用 `--actor`，并统一要求 `--reason`。
 
 二进制提供中英双语的分层帮助。帮助处理发生在配置、日志和数据库初始化之前，因此即使尚未准备生产环境变量或 PostgreSQL，也可以安全查看：
 
@@ -506,7 +508,8 @@ Minimum environment:
 CAMELLIA_NEXUS_LICENSE_ENV=production
 CAMELLIA_NEXUS_LICENSE_BIND=0.0.0.0:8088
 CAMELLIA_NEXUS_LICENSE_STORAGE=postgres
-DATABASE_URL=postgres://nexus_public:replace-with-url-safe-secret@postgres:5432/nexus
+DATABASE_URL=postgres://nexus_public@postgres:5432/nexus
+DATABASE_PASSWORD_FILE=/run/secrets/database-public-password
 CAMELLIA_NEXUS_LICENSE_ISSUER=https://license.example.com
 CAMELLIA_NEXUS_LICENSE_AUDIENCE=camellia-nexus-desktop
 CAMELLIA_NEXUS_LICENSE_KEY_ID=entitlement-2026-00
@@ -773,7 +776,9 @@ Platform Owners can use the **Administrator identities** page to provision, role
 
 ### Admin CLI
 
-The service binary includes production administration commands. Admin commands require `DATABASE_URL`. Every command that changes an account, license, activation code or device requires an attributable operator and reason: issuance uses `--issued-by` as its actor, other mutations use `--actor`, and all require `--reason`.
+The service binary includes production administration commands. Admin commands require `DATABASE_URL`;
+production supplies its password through `DATABASE_PASSWORD_FILE` and fails closed on an embedded
+password URL. Every command that changes an account, license, activation code or device requires an attributable operator and reason: issuance uses `--issued-by` as its actor, other mutations use `--actor`, and all require `--reason`.
 
 The binary provides hierarchical bilingual help. Help is resolved before configuration, logging, or database initialization, so it remains safe to inspect without production environment variables or PostgreSQL:
 

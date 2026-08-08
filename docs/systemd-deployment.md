@@ -37,6 +37,11 @@ sudo install -o root -g root -m 0755 camellia-nexus-management-server \
 sudo install -d -o root -g root -m 0755 /usr/share/camellia-nexus/admin-ui
 sudo install -d -o root -g root -m 0700 /etc/camellia-nexus
 sudo install -d -o root -g root -m 0711 /etc/camellia-nexus/secrets
+sudo install -d -o root -g root -m 0700 /etc/camellia-nexus/secrets/database
+for role in migrate public admin-web admin-worker; do
+  sudo install -d -o root -g root -m 0700 \
+    "/etc/camellia-nexus/secrets/database/$role"
+done
 sudo install -d -o root -g camellia-nexus-public -m 0750 \
   /etc/camellia-nexus/secrets/public
 sudo install -d -o root -g camellia-nexus-admin -m 0750 \
@@ -50,22 +55,31 @@ Copy the five `deploy/*.env.example` files to `/etc/camellia-nexus/` without `.e
 `management-common.env` contains only non-secret shared settings; every `DATABASE_URL` belongs in
 its role file. Environment files are `0600 root:root` because systemd reads them before changing
 UID. Public private keys are `0640 root:camellia-nexus-public`; Admin keyrings and proxy secrets are
-`0640 root:camellia-nexus-admin`. Secret inputs must be regular files no larger than 64 KiB, and a
-keyring may contain 1–64 keys. Never place secret material directly in a unit or the common file.
+`0640 root:camellia-nexus-admin`. Database password source files are root-owned `0400` files. Each
+unit loads only its own source with systemd `LoadCredential`; the service receives the read-only
+credential path through `DATABASE_PASSWORD_FILE=%d/database_password`. The source directory is
+inaccessible after the credential is staged. Other secret inputs must be regular files no larger than
+64 KiB, and a keyring may contain 1–64 keys. Never place secret material directly in a unit or the
+common file.
 
 将五个 `deploy/*.env.example` 复制到 `/etc/camellia-nexus/` 并去掉 `.example`。
 `management-common.env` 只含非敏感公共设置，每个 `DATABASE_URL` 均放入对应角色文件。systemd 会在
 切换 UID 前读取环境文件，因此权限设为 `0600 root:root`。公开面私钥使用
 `0640 root:camellia-nexus-public`，管理 keyring 与代理 secret 使用
-`0640 root:camellia-nexus-admin`。secret 必须是不超过 64 KiB 的常规文件，每个 keyring 可含
-1–64 个 key。不得把 secret 写入 unit 或公共文件。
+`0640 root:camellia-nexus-admin`。数据库密码源文件使用 root `0400` 权限；每个 unit 通过
+systemd `LoadCredential` 只加载自己的源文件，服务通过 `DATABASE_PASSWORD_FILE=%d/database_password`
+接收只读凭据路径。凭据加载后，源目录对服务进程不可访问。其他 secret 必须是不超过 64 KiB 的常规文件，
+每个 keyring 可含 1–64 个 key。不得把 secret 写入 unit 或公共文件。
 
 ## Database identities / 数据库身份
 
 Use a dedicated database owned by the migration login and three non-administrative runtime logins.
-Passwords used inside PostgreSQL URLs should be independently generated 32–128 character URL-safe
-values. Before first start, create the logins and database as a PostgreSQL administrator; enter
-passwords interactively with `\password`, not in shell history.
+`DATABASE_URL` must contain only the role and endpoint; production rejects an embedded password.
+Generate four independent 32–128 character URL-safe values, store them as the four root-owned files
+under `/etc/camellia-nexus/secrets/database/`, and never put them in shell arguments, environment
+examples, unit files, or logs. Before first start, create the logins and database as a PostgreSQL
+administrator; enter passwords interactively with `\password`, then install the resulting values into
+the role-specific files.
 
 使用由迁移账号拥有的专用数据库，以及三个无管理属性的运行时登录。放入 PostgreSQL URL 的密码应分别
 生成 32–128 位 URL-safe 随机值。首次启动前以 PostgreSQL 管理员创建登录和数据库，并通过
@@ -82,6 +96,15 @@ CREATE DATABASE nexus OWNER nexus_migrate;
 \password nexus_admin_web
 \password nexus_admin_worker
 ```
+
+The role files correspond to `migrate`, `public`, `admin-web`, and `admin-worker`. A password change
+requires replacing only the affected root-owned file, then restarting that role (and the migration
+unit first when the schema or grants also changed). The application strips one final LF/CRLF from a
+password file and rejects empty, multiline, NUL-containing, oversized, or non-UTF-8 content.
+
+角色文件分别对应 `migrate`、`public`、`admin-web` 和 `admin-worker`。密码轮换只替换相应的 root 文件，
+然后重启对应角色；若同时变更 schema 或 grants，必须先重启 migration unit。应用会移除密码文件结尾的
+一个 LF/CRLF，并拒绝空值、多行、含 NUL、超限或非 UTF-8 内容。
 
 The migration command revokes ambient `PUBLIC` access and atomically reapplies an explicit table
 allowlist after every migration. It fails if any runtime role is missing, privileged, duplicated, or
