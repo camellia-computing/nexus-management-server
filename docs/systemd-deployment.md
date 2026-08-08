@@ -81,9 +81,11 @@ examples, unit files, or logs. Before first start, create the logins and databas
 administrator; enter passwords interactively with `\password`, then install the resulting values into
 the role-specific files.
 
-使用由迁移账号拥有的专用数据库，以及三个无管理属性的运行时登录。放入 PostgreSQL URL 的密码应分别
-生成 32–128 位 URL-safe 随机值。首次启动前以 PostgreSQL 管理员创建登录和数据库，并通过
-`\password` 交互录入密码，避免写入 shell 历史。
+使用由迁移账号拥有的专用数据库，以及三个无管理属性的运行时登录。`DATABASE_URL` 只包含角色和
+端点，生产环境拒绝内嵌密码。分别生成四个 32–128 位 URL-safe 随机值，保存到
+`/etc/camellia-nexus/secrets/database/` 下四个 root 所有的文件中；不得把密码放入 shell 参数、环境变量
+示例、unit 或日志。首次启动前以 PostgreSQL 管理员创建登录和数据库，通过 `\password` 交互录入密码，
+再把对应值写入各角色的密码文件。
 
 ```sql
 CREATE ROLE nexus_migrate LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
