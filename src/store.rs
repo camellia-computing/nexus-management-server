@@ -4353,19 +4353,19 @@ fn activation_code_error(code: &ActivationCodeRecord, now: i64) -> ApiError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-    use std::fs;
+    use std::{collections::BTreeMap, io::Write};
 
     use super::*;
     use crate::contracts::DeviceRegistrationMetadata;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn database_password_file_normalizes_one_line_ending_without_exposing_content() {
-        let path = std::env::temp_dir().join("camellia-database-password-boundary-test");
-        fs::write(&path, b"password-value\r\n").expect("write password fixture");
-        let password = read_database_password(&path).expect("read password fixture");
+        let mut file = NamedTempFile::new().expect("create password fixture");
+        file.write_all(b"password-value\r\n")
+            .expect("write password fixture");
+        let password = read_database_password(file.path()).expect("read password fixture");
         assert_eq!(&*password, "password-value");
-        fs::remove_file(path).expect("remove password fixture");
     }
 
     #[test]
@@ -4376,10 +4376,10 @@ mod tests {
             b"bad\0value".as_slice(),
             b"bad\xffvalue".as_slice(),
         ] {
-            let path = std::env::temp_dir().join("camellia-invalid-database-password-test");
-            fs::write(&path, bytes).expect("write invalid password fixture");
-            assert!(read_database_password(&path).is_err());
-            fs::remove_file(path).expect("remove invalid password fixture");
+            let mut file = NamedTempFile::new().expect("create invalid password fixture");
+            file.write_all(bytes)
+                .expect("write invalid password fixture");
+            assert!(read_database_password(file.path()).is_err());
         }
     }
 
