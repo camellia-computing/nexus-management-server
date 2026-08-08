@@ -65,7 +65,10 @@ use crate::{
         CommercialOffer, ManualPaymentMethod, NewInvoice, PaymentClaimStatus,
         PaymentReviewDecision, validate_payment_review_override,
     },
-    config::{Environment, database_pool_config_from_env, time_max_forward_jump_seconds_from_env},
+    config::{
+        DatabaseConnectionConfig, Environment, database_connection_config_from_env,
+        database_pool_config_from_env, time_max_forward_jump_seconds_from_env,
+    },
     contracts::{DeviceState, Plan},
     domain::{AccountState, ActivationCodeStatus, AuditEventRecord, LicenseStatus},
     error::ApiError,
@@ -109,7 +112,7 @@ pub struct AdminHttpConfig {
     pub public_origin: String,
     pub asset_dir: PathBuf,
     pub environment: Environment,
-    pub database_url: String,
+    pub database: DatabaseConnectionConfig,
     pub database_connections: u32,
     pub database_acquire_timeout: Duration,
     pub request_timeout: Duration,
@@ -128,8 +131,8 @@ impl AdminHttpConfig {
         let public_origin = env::var("CAMELLIA_NEXUS_ADMIN_PUBLIC_ORIGIN")
             .unwrap_or_else(|_| format!("http://{bind}"));
         validate_origin(&public_origin, environment)?;
-        let database_url = env::var("DATABASE_URL")
-            .map_err(|_| "DATABASE_URL is required for admin-web".to_owned())?;
+        let database =
+            database_connection_config_from_env(environment).map_err(|error| error.to_string())?;
         let database_pool = database_pool_config_from_env().map_err(|error| error.to_string())?;
         let database_connections = database_pool.max_connections;
         let database_acquire_timeout = database_pool.acquire_timeout;
@@ -168,7 +171,7 @@ impl AdminHttpConfig {
             public_origin,
             asset_dir,
             environment,
-            database_url,
+            database,
             database_connections,
             database_acquire_timeout,
             request_timeout,
@@ -223,8 +226,8 @@ pub async fn run_admin_web(config: AdminHttpConfig) -> Result<(), Box<dyn std::e
     if let Err(error) = validate_admin_assets(&config.asset_dir) {
         return Err(error.into());
     }
-    let repository = PostgresRepository::connect(
-        &config.database_url,
+    let repository = PostgresRepository::connect_config(
+        &config.database,
         config.database_connections,
         config.database_acquire_timeout,
     )

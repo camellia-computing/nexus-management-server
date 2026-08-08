@@ -751,6 +751,7 @@ CORE ENVIRONMENT / 核心环境变量:
   CAMELLIA_NEXUS_LICENSE_BIND                Listener address / 监听地址
   CAMELLIA_NEXUS_LICENSE_STORAGE             memory | postgres
   DATABASE_URL                         Required for PostgreSQL / PostgreSQL 必填
+  DATABASE_PASSWORD_FILE               Optional password secret file / 可选数据库密码文件
   CAMELLIA_NEXUS_LICENSE_ISSUER              HTTPS issuer in production / 生产 HTTPS 签发者
   CAMELLIA_NEXUS_LICENSE_AUDIENCE            Entitlement audience / entitlement 受众
   CAMELLIA_NEXUS_LICENSE_KEY_ID              Active signing key id / 当前签名密钥标识
@@ -799,6 +800,7 @@ BEHAVIOR / 行为:
 
 REQUIRED ENVIRONMENT / 必需环境:
   DATABASE_URL                PostgreSQL connection URL / PostgreSQL 连接地址
+  DATABASE_PASSWORD_FILE      Optional password secret file / 可选数据库密码文件
   CAMELLIA_NEXUS_DATABASE_PUBLIC_ROLE
   CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_ROLE
   CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_ROLE
@@ -851,6 +853,7 @@ BEHAVIOR / 行为:
 
 CORE ENVIRONMENT / 核心环境变量:
   DATABASE_URL                              PostgreSQL connection URL / PostgreSQL 连接地址
+  DATABASE_PASSWORD_FILE                    Optional password secret file / 可选数据库密码文件
   CAMELLIA_NEXUS_LICENSE_ENV                      development | production
   CAMELLIA_NEXUS_ADMIN_BIND                       Private listener / 私有监听地址
   CAMELLIA_NEXUS_ADMIN_PUBLIC_ORIGIN              Exact browser origin; HTTPS in production
@@ -886,6 +889,7 @@ BEHAVIOR / 行为:
 
 CORE ENVIRONMENT / 核心环境变量:
   DATABASE_URL                       PostgreSQL connection URL / PostgreSQL 连接地址
+  DATABASE_PASSWORD_FILE             Optional password secret file / 可选数据库密码文件
   CAMELLIA_NEXUS_LICENSE_ENV               development | production
   CAMELLIA_NEXUS_ADMIN_KEYRING_PATH        Required in production / 生产环境必需
   CAMELLIA_NEXUS_DATABASE_MAX_CONNECTIONS  Positive connection-pool size / 正数连接池大小
@@ -973,7 +977,7 @@ fn render_admin_root() -> String {
         );
     }
     output.push_str(
-        "\nGLOBAL OPTIONS / 全局选项:\n  --human                Human JSON plus derived UTC ISO fields (default).\n                         人类友好 JSON，并补充 UTC ISO 字段（默认）。\n  --raw                  Exact machine JSON without derived fields.\n                         不含派生字段的精确机器 JSON。\n  --output <human|raw>   Select output mode explicitly. / 显式选择输出模式。\n  -h, --help             Show help without connecting to PostgreSQL.\n                         无需连接 PostgreSQL 即可显示帮助。\n\nENVIRONMENT / 环境:\n  DATABASE_URL is required only when executing an Admin operation.\n  只有实际执行 Admin 操作时才需要 DATABASE_URL。\n  CAMELLIA_NEXUS_DATABASE_MIGRATE defaults to true in development and false in production.\n  CAMELLIA_NEXUS_DATABASE_MIGRATE 在开发环境默认 true，在生产环境默认 false。\n\nTIME INPUT / 时间输入:\n  RFC3339, UTC date/date-time, relative expiry (30d, 12h, 2w), or Unix seconds.\n  支持 RFC3339、UTC 日期/日期时间、相对有效期（30d、12h、2w）或 Unix 秒。\n\nRun `camellia-nexus-management-server admin <group> --help` for group commands.\n执行 `camellia-nexus-management-server admin <group> --help` 查看命令组详情。\n",
+        "\nGLOBAL OPTIONS / 全局选项:\n  --human                Human JSON plus derived UTC ISO fields (default).\n                         人类友好 JSON，并补充 UTC ISO 字段（默认）。\n  --raw                  Exact machine JSON without derived fields.\n                         不含派生字段的精确机器 JSON。\n  --output <human|raw>   Select output mode explicitly. / 显式选择输出模式。\n  -h, --help             Show help without connecting to PostgreSQL.\n                         无需连接 PostgreSQL 即可显示帮助。\n\nENVIRONMENT / 环境:\n  DATABASE_URL is required only when executing an Admin operation.\n  只有实际执行 Admin 操作时才需要 DATABASE_URL。\n  DATABASE_PASSWORD_FILE supplies a database password without embedding it in the URL.\n  DATABASE_PASSWORD_FILE 用于通过文件提供数据库密码，避免将其嵌入 URL。\n  Production rejects a password embedded in DATABASE_URL.\n  生产环境拒绝 DATABASE_URL 中的内嵌密码。\n  CAMELLIA_NEXUS_DATABASE_MIGRATE defaults to true in development and false in production.\n  CAMELLIA_NEXUS_DATABASE_MIGRATE 在开发环境默认 true，在生产环境默认 false。\n\nTIME INPUT / 时间输入:\n  RFC3339, UTC date/date-time, relative expiry (30d, 12h, 2w), or Unix seconds.\n  支持 RFC3339、UTC 日期/日期时间、相对有效期（30d、12h、2w）或 Unix 秒。\n\nRun `camellia-nexus-management-server admin <group> --help` for group commands.\n执行 `camellia-nexus-management-server admin <group> --help` 查看命令组详情。\n",
     );
     output
 }

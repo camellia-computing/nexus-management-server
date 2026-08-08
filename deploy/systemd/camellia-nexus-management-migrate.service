@@ -12,6 +12,8 @@ Group=camellia-nexus-migrate
 UMask=0077
 EnvironmentFile=/etc/camellia-nexus/management-common.env
 EnvironmentFile=/etc/camellia-nexus/migrate.env
+LoadCredential=database_password:/etc/camellia-nexus/secrets/database/migrate/password
+Environment=DATABASE_PASSWORD_FILE=%d/database_password
 ExecStart=/usr/local/bin/camellia-nexus-management-server migrate
 RemainAfterExit=yes
 NoNewPrivileges=true

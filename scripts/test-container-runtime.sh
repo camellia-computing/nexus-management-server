@@ -78,14 +78,42 @@ migrate_password='migrate.runtime.smoke.0123456789ABC'
 public_password='public.runtime.smoke.0123456789ABCD'
 admin_web_password='admin.web.runtime.smoke.0123456789'
 admin_worker_password='admin.worker.runtime.smoke.0123456'
-migrate_database_url="postgres://$migrate_role:$migrate_password@postgres:5432/$database_name"
-public_database_url="postgres://$public_role:$public_password@postgres:5432/$database_name"
-admin_web_database_url="postgres://$admin_web_role:$admin_web_password@postgres:5432/$database_name"
-admin_worker_database_url="postgres://$admin_worker_role:$admin_worker_password@postgres:5432/$database_name"
+migrate_database_url="postgres://$migrate_role@postgres:5432/$database_name"
+public_database_url="postgres://$public_role@postgres:5432/$database_name"
+admin_web_database_url="postgres://$admin_web_role@postgres:5432/$database_name"
+admin_worker_database_url="postgres://$admin_worker_role@postgres:5432/$database_name"
+mkdir -p "$temporary_directory/database-secrets"
+printf '%s\n' "$migrate_password" >"$temporary_directory/database-secrets/database-migrate-password"
+printf '%s\n' "$public_password" >"$temporary_directory/database-secrets/database-public-password"
+printf '%s\n' "$admin_web_password" >"$temporary_directory/database-secrets/database-admin-web-password"
+printf '%s\n' "$admin_worker_password" >"$temporary_directory/database-secrets/database-admin-worker-password"
+cp "$repository_root/deploy/postgres/init-runtime-roles.sh" \
+  "$temporary_directory/database-secrets/10-runtime-roles.sh"
+chmod 0444 "$temporary_directory/database-secrets"/*
+chmod 0555 "$temporary_directory/database-secrets/10-runtime-roles.sh"
+if docker volume inspect "$secrets_volume" >/dev/null 2>&1; then
+  echo "Refusing to reuse an existing runtime secrets volume: $secrets_volume" >&2
+  exit 1
+fi
+docker volume create "$secrets_volume" >/dev/null
+secrets_volume_created=1
+tar --create --directory "$temporary_directory/database-secrets" --file - \
+  database-migrate-password database-public-password database-admin-web-password \
+  database-admin-worker-password 10-runtime-roles.sh |
+  docker run --rm --interactive --volume "$secrets_volume:/run/secrets" --entrypoint tar \
+    "$postgres_image" -xf - -C /run/secrets
 docker run --detach --name "$postgres" --network "$network" --network-alias postgres \
   --env "POSTGRES_DB=$database_name" \
   --env "POSTGRES_USER=$migrate_role" \
-  --env "POSTGRES_PASSWORD=$migrate_password" \
+  --env POSTGRES_PASSWORD_FILE=/run/secrets/database-migrate-password \
+  --env CAMELLIA_NEXUS_DATABASE_PUBLIC_ROLE="$public_role" \
+  --env CAMELLIA_NEXUS_DATABASE_PUBLIC_PASSWORD_FILE=/run/secrets/database-public-password \
+  --env CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_ROLE="$admin_web_role" \
+  --env CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_PASSWORD_FILE=/run/secrets/database-admin-web-password \
+  --env CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_ROLE="$admin_worker_role" \
+  --env CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_PASSWORD_FILE=/run/secrets/database-admin-worker-password \
+  --volume "$secrets_volume:/run/secrets:ro" \
+  --volume "$secrets_volume:/docker-entrypoint-initdb.d:ro" \
   "$postgres_image" \
   >/dev/null
 
@@ -103,29 +131,6 @@ done
 docker exec "$postgres" sh -ec \
   "test \"\$(cat /proc/1/comm)\" = postgres && pg_isready --username $migrate_role --dbname $database_name" \
   >/dev/null
-docker exec --interactive "$postgres" psql --username "$migrate_role" --dbname "$database_name" \
-  --set ON_ERROR_STOP=1 \
-  --set public_role="$public_role" --set public_password="$public_password" \
-  --set admin_web_role="$admin_web_role" --set admin_web_password="$admin_web_password" \
-  --set admin_worker_role="$admin_worker_role" --set admin_worker_password="$admin_worker_password" \
-  >/dev/null <<'SQL'
-SELECT format(
-  'CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
-  :'public_role',
-  :'public_password'
-) \gexec
-SELECT format(
-  'CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
-  :'admin_web_role',
-  :'admin_web_password'
-) \gexec
-SELECT format(
-  'CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
-  :'admin_worker_role',
-  :'admin_worker_password'
-) \gexec
-SQL
-
 echo "==> Start the pinned production evidence scanner"
 docker run --detach --name "$clamav" --network "$network" --network-alias clamav \
   --platform linux/amd64 \
@@ -146,18 +151,14 @@ docker exec "$clamav" clamdscan --ping 1 >/dev/null
 "$repository_root/scripts/generate-keyring.sh" workspace "$temporary_directory/workspace-keyring.json" >/dev/null
 "$repository_root/scripts/generate-keyring.sh" webhook "$temporary_directory/webhook-keyring.json" >/dev/null
 chmod 0444 "$temporary_directory/entitlement-private.pem" "$temporary_directory"/*-keyring.json
-if docker volume inspect "$secrets_volume" >/dev/null 2>&1; then
-  echo "Refusing to reuse an existing runtime secrets volume: $secrets_volume" >&2
-  exit 1
-fi
-docker volume create "$secrets_volume" >/dev/null
-secrets_volume_created=1
 tar --create --mode='a=r' --directory "$temporary_directory" --file - \
   entitlement-private.pem admin-keyring.json workspace-keyring.json webhook-keyring.json |
   docker run --rm --interactive --volume "$secrets_volume:/run/secrets" --entrypoint tar \
     "$postgres_image" -xf - -C /run/secrets
 docker run --rm --volume "$secrets_volume:/run/secrets:ro" --entrypoint sh "$image" -ec '
-  for secret in entitlement-private.pem admin-keyring.json workspace-keyring.json webhook-keyring.json; do
+  for secret in entitlement-private.pem admin-keyring.json workspace-keyring.json webhook-keyring.json \
+      database-migrate-password database-public-password database-admin-web-password \
+      database-admin-worker-password; do
     test -f "/run/secrets/$secret" && test -r "/run/secrets/$secret"
   done
 '
@@ -257,6 +258,7 @@ admin_post() {
 
 docker run --rm "${common[@]}" "${runtime_security[@]}" \
   --env "DATABASE_URL=$migrate_database_url" \
+  --env DATABASE_PASSWORD_FILE=/run/secrets/database-migrate-password \
   --env "CAMELLIA_NEXUS_DATABASE_PUBLIC_ROLE=$public_role" \
   --env "CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_ROLE=$admin_web_role" \
   --env "CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_ROLE=$admin_worker_role" \
@@ -308,7 +310,9 @@ reason="candidate image runtime verification"
 
 run_admin() {
   docker run --rm "${common[@]}" "${runtime_security[@]}" \
-    --env "DATABASE_URL=$admin_web_database_url" "$image" admin --raw "$@"
+    --env "DATABASE_URL=$admin_web_database_url" \
+    --env DATABASE_PASSWORD_FILE=/run/secrets/database-admin-web-password \
+    "$image" admin --raw "$@"
 }
 
 echo "==> Verify container account and Team license mutations"
@@ -337,6 +341,7 @@ echo "==> Verify first administrator bootstrap"
 bootstrap_error="$temporary_directory/bootstrap.stderr"
 if ! owner="$(docker run --rm "${common[@]}" "${runtime_security[@]}" \
     --env "DATABASE_URL=$admin_web_database_url" \
+    --env DATABASE_PASSWORD_FILE=/run/secrets/database-admin-web-password \
     --env CAMELLIA_NEXUS_ADMIN_KEYRING_PATH=/run/secrets/admin-keyring.json \
     "$image" admin --raw operator bootstrap runtimeowner --display-name 'Runtime Owner' \
     --actor "$operator_id" --reason "$reason" 2>"$bootstrap_error")"; then
@@ -373,6 +378,7 @@ unset account license issued replay_error codes
 echo "==> Verify public and administration runtime roles"
 docker run --detach --name "$public" "${common[@]}" "${runtime_security[@]}" \
   --env "DATABASE_URL=$public_database_url" \
+  --env DATABASE_PASSWORD_FILE=/run/secrets/database-public-password \
   --env CAMELLIA_NEXUS_LICENSE_BIND=0.0.0.0:8088 \
   "$image" serve >/dev/null
 
@@ -389,6 +395,7 @@ docker exec "$public" camellia-nexus-management-server healthcheck \
 admin_common=(
   "${common[@]}"
   --env "DATABASE_URL=$admin_web_database_url"
+  --env DATABASE_PASSWORD_FILE=/run/secrets/database-admin-web-password
   --env CAMELLIA_NEXUS_ADMIN_BIND=0.0.0.0:8090
   --env CAMELLIA_NEXUS_ADMIN_PUBLIC_ORIGIN=https://admin.invalid.example
   --env CAMELLIA_NEXUS_ADMIN_KEYRING_PATH=/run/secrets/admin-keyring.json
@@ -755,6 +762,7 @@ unset expired_sessions
 docker run --detach --name "$worker" --publish 127.0.0.1::9091 \
   "${admin_common[@]}" "${runtime_security[@]}" \
   --env "DATABASE_URL=$admin_worker_database_url" \
+  --env DATABASE_PASSWORD_FILE=/run/secrets/database-admin-worker-password \
   "$image" admin-worker >/dev/null
 worker_ready=0
 for _ in {1..30}; do
@@ -774,6 +782,33 @@ if [[ "$worker_ready" != 1 ]]; then
     sed -E 's#postgres://[^[:space:]"]+#postgres://[redacted]#g' >&2
   exit 1
 fi
+
+echo "==> Verify database passwords are absent from container and application process metadata"
+for container in "$postgres" "$public" "$admin" "$worker"; do
+  container_metadata="$(docker inspect --format \
+    '{{json .Config.Env}} {{json .Config.Entrypoint}} {{json .Config.Cmd}}' "$container")"
+  for secret in "$migrate_password" "$public_password" "$admin_web_password" "$admin_worker_password"; do
+    if grep -Fq -- "$secret" <<<"$container_metadata"; then
+      echo "database password leaked into Docker metadata for $container" >&2
+      exit 1
+    fi
+  done
+done
+for container in "$public" "$admin" "$worker"; do
+  process_metadata="$(docker exec --user 10001:10001 "$container" sh -ec '
+      for file in /proc/[0-9]*/cmdline /proc/[0-9]*/environ; do
+        test -r "$file" || continue
+        tr "\000" "\n" <"$file"
+      done
+    ')"
+  for secret in "$migrate_password" "$public_password" "$admin_web_password" "$admin_worker_password"; do
+    if grep -Fq -- "$secret" <<<"$process_metadata"; then
+      echo "database password leaked into application process metadata for $container" >&2
+      exit 1
+    fi
+  done
+done
+unset container_metadata process_metadata
 
 worker_address="$(docker port "$worker" 9091/tcp)"
 worker_port="${worker_address##*:}"

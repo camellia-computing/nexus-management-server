@@ -239,15 +239,31 @@ grep -Fq './deploy/postgres/init-runtime-roles.sh:/docker-entrypoint-initdb.d/10
   docker-compose.yml ||
   fail 'Compose must create separate unprivileged database runtime roles on first start'
 for role in MIGRATE PUBLIC ADMIN_WEB ADMIN_WORKER; do
-  grep -Fq "CAMELLIA_NEXUS_DATABASE_${role}_PASSWORD" docker-compose.yml ||
+  grep -Fq "CAMELLIA_NEXUS_DATABASE_${role}_PASSWORD_FILE" docker-compose.yml ||
     fail "Compose is missing the ${role} database credential boundary"
 done
+for secret in database_migrate_password database_public_password database_admin_web_password database_admin_worker_password; do
+  grep -Fq "$secret" docker-compose.yml ||
+    fail "Compose is missing the ${secret} Docker secret"
+done
+if grep -Eq 'CAMELLIA_NEXUS_DATABASE_(MIGRATE|PUBLIC|ADMIN_WEB|ADMIN_WORKER)_PASSWORD:' docker-compose.yml; then
+  fail 'Compose must not expose database passwords as environment values'
+fi
 if grep -q '^DATABASE_URL=' deploy/management-common.env.example; then
   fail 'the common systemd environment must not share one database credential across roles'
 fi
 for role_file in migrate public-api admin-web admin-worker; do
   grep -q '^DATABASE_URL=postgres://' "deploy/${role_file}.env.example" ||
     fail "${role_file} must declare its own database login"
+  if grep -Eq '^DATABASE_URL=postgres://[^@/]+:[^@]*@' "deploy/${role_file}.env.example"; then
+    fail "${role_file} must not embed a database password in DATABASE_URL"
+  fi
+done
+for unit in deploy/systemd/*.service; do
+  grep -Fq 'LoadCredential=database_password:' "$unit" ||
+    fail "$(basename "$unit") must load a role-specific database credential"
+  grep -Fq 'Environment=DATABASE_PASSWORD_FILE=%d/database_password' "$unit" ||
+    fail "$(basename "$unit") must pass only the credential path to the process"
 done
 grep -Fq 'apply_runtime_database_grants' src/main.rs ||
   fail 'the migration role must atomically apply explicit runtime database grants'

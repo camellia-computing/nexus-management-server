@@ -11,7 +11,7 @@ fixture="$(mktemp -d "${TMPDIR:-/tmp}/camellia-toolchains-test.XXXXXX")"
 trap 'rm -rf "$fixture"' EXIT
 
 mkdir -p "$fixture/admin-ui" "$fixture/scripts" "$fixture/docs" "$fixture/.github" \
-  "$fixture/deploy/postgres" "$fixture/src"
+  "$fixture/deploy/postgres" "$fixture/deploy/systemd" "$fixture/src"
 cp "$repository_root/.dockerignore" "$repository_root/.node-version" \
   "$repository_root/Cargo.toml" "$repository_root/rust-toolchain.toml" \
   "$repository_root/Dockerfile" "$repository_root/docker-compose.yml" "$fixture/"
@@ -23,6 +23,7 @@ cp "$repository_root/scripts/build-e2e-bundle.sh" "$repository_root/scripts/prov
 cp "$repository_root/docs/dependency-management.md" "$fixture/docs/"
 cp "$repository_root/deploy/"*.env.example "$fixture/deploy/"
 cp "$repository_root/deploy/postgres/init-runtime-roles.sh" "$fixture/deploy/postgres/"
+cp "$repository_root/deploy/systemd/"*.service "$fixture/deploy/systemd/"
 cp "$repository_root/src/admin_jobs.rs" "$repository_root/src/main.rs" "$fixture/src/"
 cp -R "$repository_root/.github/workflows" "$fixture/.github/"
 cp "$repository_root/.github/dependabot.yml" "$fixture/.github/"
