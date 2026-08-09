@@ -3,6 +3,13 @@
 All notable changes to the Camellia Nexus Management Server will be recorded
 here from the first commercial release onward.
 
+## [1.0.5] - 2026-08-09
+
+### Fixed
+
+- parameterize private production policy (#22)
+
+
 ## [1.0.4] - 2026-08-08
 
 ### Fixed
