@@ -214,11 +214,12 @@ addresses, customer data, credentials, or machine-local procedures here.
 - Secret generators use `umask 077`, publish atomically, refuse overwrite, and write only to ignored
   locations. Secret access is an outcome-based boundary, not a fixed host ownership recipe: each
   intended container identity must be able to read only its required files, and unrelated host or
-  container identities must not. The current application image declares numeric UID/GID
-  `10001:10001`; derive the PostgreSQL identity from the pinned image. A local bind may use a narrow
-  owner/group mode, an ACL, or deployment-platform UID remapping as long as runtime access probes and
-  fresh-volume bootstrap pass. Keep the enclosing deployment directory restricted and never make a
-  secret globally readable.
+  container identities must not. Resolve effective identities from immutable image metadata and the
+  runtime security context; do not present image-specific numeric identities as portable host
+  ownership requirements. A local bind may use restricted owner/group permissions, an ACL, or
+  deployment-platform secret mapping as long as target-identity read probes and fresh-volume
+  bootstrap pass. Keep the enclosing deployment directory restricted and never make a secret
+  globally readable.
 - Deployment-specific domains, addresses, host ports, compatible client versions, certificate names,
   and backup identifiers belong only in ignored local configuration or the deployment platform. Keep
   committed examples on reserved domains and generic loopback/default ports; never copy production

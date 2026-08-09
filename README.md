@@ -68,12 +68,12 @@ CAMELLIA_NEXUS_CLEANUP_BATCH_SIZE=1000
 
 容器部署要点：
 
-- 当前生产镜像契约仅支持 `linux/amd64`；ClamAV 依赖与正式构建均显式采用该架构，不承诺未经验证的兼容架构
+- 正式容器构建支持 `linux/amd64`；ClamAV 依赖与发布工作流均显式采用该架构，不承诺未经验证的兼容架构
 - 使用 `docker-compose.yml` 作为生产部署模板，把 `.env.example` 复制为已忽略的 `.env`，并设置正式 Release 中的不可变镜像摘要、issuer、Admin origin、客户端版本策略和宿主机端口。缺少生产必填策略时 Compose 必须直接拒绝渲染，不能静默采用示例域名或旧版本
 - 已填充的 `.env`、Compose override 和反向代理配置是私有部署状态，不得提交、粘贴到 PR/Issue 或写入仓库文档。`.env` 只保存非秘密策略和 secret **路径**；密码、PEM、keyring、代理共享密钥和 token 始终使用 `secrets/` 或平台 secret store
 - Compose 默认将业务与指标端口只绑定宿主机回环地址；`CAMELLIA_NEXUS_LICENSE_HOST_PORT`、`CAMELLIA_NEXUS_ADMIN_HOST_PORT` 及两个 `*_METRICS_HOST_PORT` 只改变宿主机端口，不允许通过 `.env` 把监听地址扩大为公网
 - 将签发 PEM 放入 Compose secret 指向的位置，默认示例为 `./secrets/entitlement-es256-private.pem`；可通过 `.env.example` 中的 `*_FILE` 变量选择其他宿主机来源路径，但容器内路径保持稳定
-- Compose 的本地文件型 secret 会保留宿主机权限。最终门禁不是固定的 `chown`：应用容器必须能读取其专属 PEM、keyring、代理 secret 和对应数据库密码，PostgreSQL 还必须能在空卷初始化时读取四个数据库密码，其他身份不得读取。当前发布镜像的应用 UID/GID 为 `10001:10001`，固定 PostgreSQL Alpine 镜像的 postgres GID 当前为 `70`，因此 `10001:10001 0400`（应用专属）与 `10001:70 0440`（数据库密码）是普通 Linux 本地部署的一种可用方案，而不是跨平台硬性所有权。ACL 或平台 UID 映射同样可用，前提是实际容器读取探针和空卷初始化通过；`secrets/` 外层目录仍应限制为部署账号访问，任何环境都不得用全局可读的 `0444` 规避权限错误
+- Compose 的本地文件型 secret 会保留宿主机访问控制。部署系统必须从不可变镜像元数据和运行时安全上下文解析实际身份，再通过受限的 owner/group、ACL 或平台 secret 映射授予每个目标所需的最小读取集合；不得把镜像特定的数值身份写成可移植的宿主机权限要求。应用角色必须能读取各自的 PEM、keyring、代理 secret 和数据库密码，PostgreSQL 必须能在空卷初始化时读取所需数据库密码，其他身份不得读取。以目标容器身份执行的读取探针和隔离的空卷初始化是验收门禁；secret 来源目录还必须限制为部署主体访问，任何环境都不得用全局可读权限规避配置错误
 - PostgreSQL 使用固定到不可变摘要的 `postgres:18-alpine`，数据卷挂载到 `/var/lib/postgresql`；运行角色初始化脚本采用 `create_host_path: false` 的只读绑定，文件缺失时必须在创建容器前失败，不能由 Docker 静默创建同名目录
 - 服务默认只暴露到本机地址，生产入口应由反向代理提供 HTTPS
 - `docker-compose.yml` 显式关闭应用启动迁移；先执行受控的一次性迁移，再启动或滚动替换服务
@@ -121,22 +121,13 @@ SQLx 会校验数据库中已应用 migration 的 checksum。校验失败表示�
 
 首次部署：
 
-在执行下列命令前，通过部署 secret 系统分别生成四个独立的 32–128 字符 URL-safe 随机数据库密码，并写入 `.env` 所引用的 `database-*-password` 文件；不得把密码放入命令参数、环境值或终端输出。下列权限命令假定这些文件已经存在，并仅演示当前固定镜像在普通 Linux 宿主机上的 owner/group 方案；使用 ACL、user namespace 或平台 secret 映射时应采用等价的最小读取权限。
+在执行下列命令前，通过部署 secret 系统分别生成四个独立的 32–128 字符 URL-safe 随机数据库密码，并写入 `.env` 所引用的 `database-*-password` 文件；不得把密码放入命令参数、环境值或终端输出。生成全部 secret 后，按照上述访问边界应用部署环境的所有权、ACL 或 secret 映射策略，并以每个目标容器的实际身份验证只读访问。数据库 secret 还必须在隔离环境中通过空卷初始化门禁，不能仅凭宿主机权限外观判断可用性。
 
 ```bash
 ./scripts/generate-keyring.sh admin
 ./scripts/generate-keyring.sh workspace
 ./scripts/generate-keyring.sh webhook
 ./scripts/generate-proxy-secret.sh
-sudo chmod 0700 secrets
-sudo chown 10001:10001 \
-  secrets/entitlement-es256-private.pem secrets/*-keyring.json \
-  secrets/admin-proxy-secret
-sudo chmod 0400 \
-  secrets/entitlement-es256-private.pem secrets/*-keyring.json \
-  secrets/admin-proxy-secret
-sudo chown 10001:70 secrets/database-*-password
-sudo chmod 0440 secrets/database-*-password
 docker compose config --quiet
 docker compose up -d postgres clamav
 docker compose run --rm migrate
@@ -574,7 +565,7 @@ Server and client versions advance independently. Before approval, the server bi
 
 Container deployment notes:
 
-- The current production image contract supports `linux/amd64` only. The ClamAV dependency and formal build both declare that architecture; unverified compatibility architectures are not promised.
+- Formal container builds support `linux/amd64`. The ClamAV dependency and release workflow both declare that architecture; unverified compatibility architectures are not promised.
 - Use `docker-compose.yml` as the production template. Copy `.env.example` to the ignored `.env` and
   set the immutable digest from the formal Release, issuer, Admin origin, client-version policy, and
   host ports. Compose must reject a missing production policy instead of silently using an example
@@ -589,15 +580,16 @@ Container deployment notes:
 - Place the issuance PEM at the Compose secret path, defaulting to
   `./secrets/entitlement-es256-private.pem`. The `*_FILE` variables in `.env.example` may select other
   host source paths while keeping stable in-container paths
-- Local file-backed Compose secrets preserve host permissions. The acceptance boundary is not a
-  fixed `chown`: each application container must read its required PEM, keyrings, proxy secret, and
-  database password; PostgreSQL must also read all four database passwords during fresh-volume
-  initialization; unrelated identities must not read them. The current release image uses
-  UID/GID `10001:10001`, and the pinned PostgreSQL Alpine image currently gives postgres GID `70`,
-  making `10001:10001 0400` for application-only files and `10001:70 0440` for database passwords one
-  valid local-Linux recipe, not a cross-platform ownership mandate. ACLs or platform UID remapping
-  are equally valid when actual container read probes and fresh-volume initialization pass. Keep the
-  enclosing deployment directory restricted and never make a secret globally readable with `0444`
+- Local file-backed Compose secrets preserve host access controls. The deployment system must resolve
+  effective identities from immutable image metadata and the runtime security context, then grant
+  each target its minimum read set through restricted owner/group permissions, ACLs, or platform
+  secret mapping. Image-specific numeric identities must not be treated as portable host-permission
+  requirements. Application roles must read only their required PEM, keyrings, proxy secret, and
+  database password; PostgreSQL must read the required database passwords during fresh-volume
+  initialization; unrelated identities must not read them. Read probes executed as each target
+  identity and an isolated fresh-volume bootstrap are the acceptance gates. Restrict the secret
+  source directory to the deployment principal and never use global readability to bypass an access
+  error
 - PostgreSQL uses `postgres:18-alpine` pinned to an immutable digest, with data mounted at
   `/var/lib/postgresql`; its first-start hook creates only the three unprivileged runtime logins, and
   the migration command applies the explicit per-table grants. The hook uses a read-only bind with
@@ -658,25 +650,17 @@ Bootstrap the first Platform Owner with:
 
 Before running the commands below, use the deployment secret system to create four independent
 32–128-character URL-safe random database passwords in the `database-*-password` files referenced by
-`.env`. Never place a password in command arguments, environment values, or terminal output. The
-permission commands assume those files already exist and illustrate only the owner/group recipe for
-the currently pinned images on a conventional Linux host. ACLs, user namespaces, and platform secret
-mapping should instead provide the equivalent least-privilege read outcome.
+`.env`. Never place a password in command arguments, environment values, or terminal output. After
+generating every secret, apply the deployment environment's ownership, ACL, or secret-mapping policy
+for the access boundary above and verify read access as each effective target identity. Database
+secrets must additionally pass an isolated fresh-volume initialization gate; host permission
+metadata alone is not sufficient evidence.
 
 ```bash
 ./scripts/generate-keyring.sh admin
 ./scripts/generate-keyring.sh workspace
 ./scripts/generate-keyring.sh webhook
 ./scripts/generate-proxy-secret.sh
-sudo chmod 0700 secrets
-sudo chown 10001:10001 \
-  secrets/entitlement-es256-private.pem secrets/*-keyring.json \
-  secrets/admin-proxy-secret
-sudo chmod 0400 \
-  secrets/entitlement-es256-private.pem secrets/*-keyring.json \
-  secrets/admin-proxy-secret
-sudo chown 10001:70 secrets/database-*-password
-sudo chmod 0440 secrets/database-*-password
 docker compose config --quiet
 docker compose up -d postgres clamav
 docker compose run --rm migrate
