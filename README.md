@@ -26,13 +26,13 @@ CAMELLIA_NEXUS_LICENSE_ENV=production
 CAMELLIA_NEXUS_LICENSE_BIND=0.0.0.0:8088
 CAMELLIA_NEXUS_LICENSE_STORAGE=postgres
 DATABASE_URL=postgres://nexus_public@postgres:5432/nexus
-DATABASE_PASSWORD_FILE=/run/secrets/database-public-password
+DATABASE_PASSWORD_FILE=/run/secrets/database_public_password
 CAMELLIA_NEXUS_LICENSE_ISSUER=https://license.example.com
 CAMELLIA_NEXUS_LICENSE_AUDIENCE=camellia-nexus-desktop
-CAMELLIA_NEXUS_LICENSE_KEY_ID=entitlement-2026-00
-CAMELLIA_NEXUS_LICENSE_PRIVATE_KEY_PEM_PATH=/run/secrets/entitlement-es256-private.pem
-CAMELLIA_NEXUS_WORKSPACE_KEYRING_PATH=/run/secrets/workspace_keyring.json
-CAMELLIA_NEXUS_WEBHOOK_KEYRING_PATH=/run/secrets/webhook_keyring.json
+CAMELLIA_NEXUS_LICENSE_KEY_ID=example-entitlement-key
+CAMELLIA_NEXUS_LICENSE_PRIVATE_KEY_PEM_PATH=/run/secrets/entitlement_private_key
+CAMELLIA_NEXUS_WORKSPACE_KEYRING_PATH=/run/secrets/workspace_keyring
+CAMELLIA_NEXUS_WEBHOOK_KEYRING_PATH=/run/secrets/webhook_keyring
 CAMELLIA_NEXUS_OAUTH_CLIENT_ID=camellia-nexus-desktop
 CAMELLIA_NEXUS_OAUTH_REDIRECT_URIS=camellia-nexus://auth/callback
 CAMELLIA_NEXUS_CLIENT_MINIMUM_VERSION=1.0.0
@@ -68,11 +68,13 @@ CAMELLIA_NEXUS_CLEANUP_BATCH_SIZE=1000
 
 容器部署要点：
 
-- 当前生产镜像契约仅支持 `linux/amd64`；ClamAV 依赖与正式构建均显式采用该架构，不承诺未经验证的兼容架构
-- 使用 `docker-compose.yml` 作为生产部署模板，并替换镜像 owner、数据库密码、issuer URL 和 OAuth redirect URI allow-list
-- 将签发 PEM 放入 compose secret 指向的位置，默认示例为 `./secrets/entitlement-es256-private.pem`
-- Compose 的本地文件型 secret 会保留宿主机所有权；应用镜像以 `10001:10001` 运行，因此所有私密 secret 文件必须由 `10001:10001` 持有并设为 `0400`，`secrets/` 目录应仅允许部署账号访问（`0700`）。不得以全局可读的 `0444` 规避权限错误
-- PostgreSQL 使用固定到不可变摘要的 `postgres:18-alpine`，数据卷挂载到 `/var/lib/postgresql`
+- 正式容器构建支持 `linux/amd64`；ClamAV 依赖与发布工作流均显式采用该架构，不承诺未经验证的兼容架构
+- 使用 `docker-compose.yml` 作为生产部署模板，把 `.env.example` 复制为已忽略的 `.env`，并设置正式 Release 中的不可变镜像摘要、issuer、Admin origin、客户端版本策略和宿主机端口。缺少生产必填策略时 Compose 必须直接拒绝渲染，不能静默采用示例域名或旧版本
+- 已填充的 `.env`、Compose override 和反向代理配置是私有部署状态，不得提交、粘贴到 PR/Issue 或写入仓库文档。`.env` 只保存非秘密策略和 secret **路径**；密码、PEM、keyring、代理共享密钥和 token 始终使用 `secrets/` 或平台 secret store
+- Compose 默认将业务与指标端口只绑定宿主机回环地址；`CAMELLIA_NEXUS_LICENSE_HOST_PORT`、`CAMELLIA_NEXUS_ADMIN_HOST_PORT` 及两个 `*_METRICS_HOST_PORT` 只改变宿主机端口，不允许通过 `.env` 把监听地址扩大为公网
+- 将签发 PEM 放入 Compose secret 指向的位置，默认示例为 `./secrets/entitlement-es256-private.pem`；可通过 `.env.example` 中的 `*_FILE` 变量选择其他宿主机来源路径，但容器内路径保持稳定
+- Compose 的本地文件型 secret 会保留宿主机访问控制。部署系统必须从不可变镜像元数据和运行时安全上下文解析实际身份，再通过受限的 owner/group、ACL 或平台 secret 映射授予每个目标所需的最小读取集合；不得把镜像特定的数值身份写成可移植的宿主机权限要求。应用角色必须能读取各自的 PEM、keyring、代理 secret 和数据库密码，PostgreSQL 必须能在空卷初始化时读取所需数据库密码，其他身份不得读取。以目标容器身份执行的读取探针和隔离的空卷初始化是验收门禁；secret 来源目录还必须限制为部署主体访问，任何环境都不得用全局可读权限规避配置错误
+- PostgreSQL 使用固定到不可变摘要的 `postgres:18-alpine`，数据卷挂载到 `/var/lib/postgresql`；运行角色初始化脚本采用 `create_host_path: false` 的只读绑定，文件缺失时必须在创建容器前失败，不能由 Docker 静默创建同名目录
 - 服务默认只暴露到本机地址，生产入口应由反向代理提供 HTTPS
 - `docker-compose.yml` 显式关闭应用启动迁移；先执行受控的一次性迁移，再启动或滚动替换服务
 - 启动后使用 `GET /healthz` 与 `GET /readyz` 检查服务状态；容器内可执行 `camellia-nexus-management-server healthcheck http://127.0.0.1:<port>/readyz`。示例为 public/Worker 保留 30 秒、为默认 180 秒请求上限的 Admin Web 保留 210 秒 SIGTERM 退出窗口
@@ -87,10 +89,16 @@ migration 表达。
 `CAMELLIA_NEXUS_DATABASE_MIGRATE` 的默认值取决于 `CAMELLIA_NEXUS_LICENSE_ENV`：开发环境为 `true`，生产环境为 `false`。常驻服务在生产环境必须保持 `false`；发布前由同一镜像的专用 `migrate` 角色一次性应用迁移并验证 readiness：
 
 ```bash
+docker compose config --quiet
+docker compose up -d postgres clamav
 docker compose run --rm migrate
+docker compose up -d --no-deps management-server admin-web
+docker compose up -d --no-deps admin-worker
 ```
 
 迁移成功退出后，Compose 才会启动公开授权服务、管理控制台和任务 Worker。服务在绑定监听端口前仍会执行 schema readiness 检查；该检查不替代完整 migration/checksum 发布门禁。
+
+首次创建 PostgreSQL 卷前，必须确认同一 Release 的 `deploy/postgres/init-runtime-roles.sh` 已存在且四个数据库 secret 具备上述双身份只读权限。若卷已被提前初始化但三个受限运行角色尚不存在，不得删除卷或编辑 `_sqlx_migrations`；恢复同一 Release 的脚本后，先执行一次 `docker compose exec -T postgres /docker-entrypoint-initdb.d/10-runtime-roles.sh`，再重新运行 migrate。该恢复命令只补建缺失角色，不替代迁移和授权门禁。
 
 SQLx 会校验数据库中已应用 migration 的 checksum。校验失败表示运行工件与数据库迁移历史不一致，
 应停止发布并恢复二者的一致状态，再通过新的 migration 交付结构变更。不得手动改写
@@ -113,24 +121,22 @@ SQLx 会校验数据库中已应用 migration 的 checksum。校验失败表示�
 
 首次部署：
 
+在执行下列命令前，通过部署 secret 系统分别生成四个独立的 32–128 字符 URL-safe 随机数据库密码，并写入 `.env` 所引用的 `database-*-password` 文件；不得把密码放入命令参数、环境值或终端输出。生成全部 secret 后，按照上述访问边界应用部署环境的所有权、ACL 或 secret 映射策略，并以每个目标容器的实际身份验证只读访问。数据库 secret 还必须在隔离环境中通过空卷初始化门禁，不能仅凭宿主机权限外观判断可用性。
+
 ```bash
 ./scripts/generate-keyring.sh admin
 ./scripts/generate-keyring.sh workspace
 ./scripts/generate-keyring.sh webhook
 ./scripts/generate-proxy-secret.sh
-sudo chmod 0700 secrets
-sudo chown 10001:10001 \
-  secrets/entitlement-es256-private.pem secrets/*-keyring.json \
-  secrets/admin-proxy-secret
-sudo chmod 0400 \
-  secrets/entitlement-es256-private.pem secrets/*-keyring.json \
-  secrets/admin-proxy-secret
+docker compose config --quiet
+docker compose up -d postgres clamav
 docker compose run --rm migrate
-docker compose run --rm admin-web admin operator bootstrap owner \
+docker compose run --rm --no-deps admin-web admin operator bootstrap owner \
   --display-name "Primary owner" \
   --actor deployment \
   --reason "initial control-plane bootstrap"
-docker compose up -d
+docker compose up -d --no-deps management-server admin-web
+docker compose up -d --no-deps admin-worker
 ```
 
 引导命令只输出十分钟有效的登记令牌。管理员首次打开控制台后设置密码并登记 TOTP；密码使用 Argon2id，TOTP 密钥和敏感交付使用独立派生密钥加密。激活码批次和 Team 邀请令牌不会直接出现在普通 API 响应或日志中，而是绑定当前管理员会话，通过十分钟领取令牌查看，并在确认后销毁密文。
@@ -398,7 +404,7 @@ camellia-nexus-management-server admin audit list --account acct_customer_001 --
 - `SECURITY.md`、`docs/runbooks/incident-response.md`、`docs/runbooks/key-rotation.md`：安全披露、事件响应与密钥/凭据轮换
 - `docs/runbooks/backup-restore.md`、`docs/runbooks/release-rollback.md`：联合恢复点、恢复验收与按摘要发布/回滚
 - `docker-compose.yml`：容器部署模板
-- `.env.example`：容器环境变量示例
+- `.env.example`：不含秘密、必填部署策略默认留空的 Compose 配置模板
 - `deploy/systemd/`：非容器 Linux 的 migrate、公开服务、Admin Web 和 Worker 独立 unit
 - `deploy/*.env.example`：按角色分离的非容器生产环境变量模板
 - `docs/systemd-deployment.md`：systemd 安装、升级、回滚与指标契约
@@ -429,6 +435,8 @@ entitlement 签发材料应由部署环境统一管理，轮换策略由发布�
 - `CAMELLIA_NEXUS_HTTP_LOG_LEVEL`：HTTP request/response access log 等级
 - `CAMELLIA_NEXUS_HTTP_FAILURE_LOG_LEVEL`：HTTP failure log 等级
 - `CAMELLIA_NEXUS_LOG_FILTER`：可选完整 tracing filter 表达式
+
+生产诊断遵循最小披露原则。提交工单、PR 或日志证据时，不得输出已填充的 `.env`、`docker compose config` 完整渲染、`docker inspect` 完整环境、`nginx -T`、代理认证 header/值、secret 内容或 secret 摘要；这些输出还可能包含私有域名、证书名、内部地址、备份标识和客户数据。Compose 只使用 `docker compose config --quiet` 验证结构，其他证据限制为选定的非敏感版本/健康字段、文件权限和布尔匹配结果。诊断中出现租户、账号、设备、请求或基础设施标识时，必须先脱敏。
 
 运行与维护配置：
 
@@ -509,13 +517,13 @@ CAMELLIA_NEXUS_LICENSE_ENV=production
 CAMELLIA_NEXUS_LICENSE_BIND=0.0.0.0:8088
 CAMELLIA_NEXUS_LICENSE_STORAGE=postgres
 DATABASE_URL=postgres://nexus_public@postgres:5432/nexus
-DATABASE_PASSWORD_FILE=/run/secrets/database-public-password
+DATABASE_PASSWORD_FILE=/run/secrets/database_public_password
 CAMELLIA_NEXUS_LICENSE_ISSUER=https://license.example.com
 CAMELLIA_NEXUS_LICENSE_AUDIENCE=camellia-nexus-desktop
-CAMELLIA_NEXUS_LICENSE_KEY_ID=entitlement-2026-00
-CAMELLIA_NEXUS_LICENSE_PRIVATE_KEY_PEM_PATH=/run/secrets/entitlement-es256-private.pem
-CAMELLIA_NEXUS_WORKSPACE_KEYRING_PATH=/run/secrets/workspace_keyring.json
-CAMELLIA_NEXUS_WEBHOOK_KEYRING_PATH=/run/secrets/webhook_keyring.json
+CAMELLIA_NEXUS_LICENSE_KEY_ID=example-entitlement-key
+CAMELLIA_NEXUS_LICENSE_PRIVATE_KEY_PEM_PATH=/run/secrets/entitlement_private_key
+CAMELLIA_NEXUS_WORKSPACE_KEYRING_PATH=/run/secrets/workspace_keyring
+CAMELLIA_NEXUS_WEBHOOK_KEYRING_PATH=/run/secrets/webhook_keyring
 CAMELLIA_NEXUS_OAUTH_CLIENT_ID=camellia-nexus-desktop
 CAMELLIA_NEXUS_OAUTH_REDIRECT_URIS=camellia-nexus://auth/callback
 CAMELLIA_NEXUS_CLIENT_MINIMUM_VERSION=1.0.0
@@ -557,15 +565,36 @@ Server and client versions advance independently. Before approval, the server bi
 
 Container deployment notes:
 
-- The current production image contract supports `linux/amd64` only. The ClamAV dependency and formal build both declare that architecture; unverified compatibility architectures are not promised.
-- Use `docker-compose.yml` as the production deployment template and set independently generated
-  migration, public, Admin Web, and Worker database passwords, plus the image coordinate, issuer URL,
-  and OAuth redirect URI allow-list
-- Place the issuance PEM at the compose secret path. The default example is `./secrets/entitlement-es256-private.pem`
-- Local file-backed Compose secrets preserve host ownership. The application image runs as `10001:10001`, so every private secret file must be owned by `10001:10001` with mode `0400`; restrict the `secrets/` directory to the deployment account with mode `0700`. Never work around a permissions failure by making secrets globally readable with mode `0444`
+- Formal container builds support `linux/amd64`. The ClamAV dependency and release workflow both declare that architecture; unverified compatibility architectures are not promised.
+- Use `docker-compose.yml` as the production template. Copy `.env.example` to the ignored `.env` and
+  set the immutable digest from the formal Release, issuer, Admin origin, client-version policy, and
+  host ports. Compose must reject a missing production policy instead of silently using an example
+  domain or stale version
+- A populated `.env`, Compose override, and reverse-proxy configuration are private deployment state.
+  Never commit them, paste them into a PR/Issue, or record them in repository documentation. `.env`
+  contains only non-secret policy and secret **paths**; passwords, PEM files, keyrings, proxy shared
+  secrets, and tokens stay in `secrets/` or the platform secret store
+- Compose binds business and metrics ports to host loopback. `CAMELLIA_NEXUS_LICENSE_HOST_PORT`,
+  `CAMELLIA_NEXUS_ADMIN_HOST_PORT`, and the two `*_METRICS_HOST_PORT` settings change only host ports;
+  `.env` cannot widen the listener address to a public interface
+- Place the issuance PEM at the Compose secret path, defaulting to
+  `./secrets/entitlement-es256-private.pem`. The `*_FILE` variables in `.env.example` may select other
+  host source paths while keeping stable in-container paths
+- Local file-backed Compose secrets preserve host access controls. The deployment system must resolve
+  effective identities from immutable image metadata and the runtime security context, then grant
+  each target its minimum read set through restricted owner/group permissions, ACLs, or platform
+  secret mapping. Image-specific numeric identities must not be treated as portable host-permission
+  requirements. Application roles must read only their required PEM, keyrings, proxy secret, and
+  database password; PostgreSQL must read the required database passwords during fresh-volume
+  initialization; unrelated identities must not read them. Read probes executed as each target
+  identity and an isolated fresh-volume bootstrap are the acceptance gates. Restrict the secret
+  source directory to the deployment principal and never use global readability to bypass an access
+  error
 - PostgreSQL uses `postgres:18-alpine` pinned to an immutable digest, with data mounted at
   `/var/lib/postgresql`; its first-start hook creates only the three unprivileged runtime logins, and
-  the migration command applies the explicit per-table grants
+  the migration command applies the explicit per-table grants. The hook uses a read-only bind with
+  `create_host_path: false`, so a missing script fails before container creation instead of becoming
+  a Docker-created directory
 - The service example binds only to localhost; production ingress should terminate HTTPS through a reverse proxy
 - `docker-compose.yml` explicitly disables application-startup migrations; run a controlled one-shot migration before starting or rolling the service
 - Use `GET /healthz` and `GET /readyz` after startup. Inside the container, run `camellia-nexus-management-server healthcheck http://127.0.0.1:<port>/readyz`. The sample gives public/Worker roles a 30-second SIGTERM stop window and Admin Web a 210-second window for its default 180-second request limit.
@@ -581,10 +610,21 @@ migrations.
 The default for `CAMELLIA_NEXUS_DATABASE_MIGRATE` depends on `CAMELLIA_NEXUS_LICENSE_ENV`: it is `true` in development and `false` in production. Long-lived production roles must keep it disabled. Before rollout, the dedicated `migrate` role from the same image applies every pending migration and verifies readiness:
 
 ```bash
+docker compose config --quiet
+docker compose up -d postgres clamav
 docker compose run --rm migrate
+docker compose up -d --no-deps management-server admin-web
+docker compose up -d --no-deps admin-worker
 ```
 
 Compose starts the public service, private console and worker only after the migration role succeeds. Every long-lived role still performs a required-schema readiness check before serving work.
+
+Before creating the PostgreSQL volume, verify that `deploy/postgres/init-runtime-roles.sh` comes from
+the same Release and that the four database secrets have the dual-identity read boundary above. If a
+volume was initialized before the three restricted runtime roles existed, do not delete it or edit
+`_sqlx_migrations`. Restore the script from the same Release, run
+`docker compose exec -T postgres /docker-entrypoint-initdb.d/10-runtime-roles.sh` once, then rerun the
+migrate role. This recovery creates only missing roles and does not replace the migration/grant gate.
 
 SQLx validates checksums for migrations already applied to the database. A checksum failure indicates
 that the runtime artifact and database migration history are inconsistent. Stop the rollout, restore
@@ -608,23 +648,27 @@ it provides no offline administration capability.
 
 Bootstrap the first Platform Owner with:
 
+Before running the commands below, use the deployment secret system to create four independent
+32–128-character URL-safe random database passwords in the `database-*-password` files referenced by
+`.env`. Never place a password in command arguments, environment values, or terminal output. After
+generating every secret, apply the deployment environment's ownership, ACL, or secret-mapping policy
+for the access boundary above and verify read access as each effective target identity. Database
+secrets must additionally pass an isolated fresh-volume initialization gate; host permission
+metadata alone is not sufficient evidence.
+
 ```bash
 ./scripts/generate-keyring.sh admin
 ./scripts/generate-keyring.sh workspace
 ./scripts/generate-keyring.sh webhook
 ./scripts/generate-proxy-secret.sh
-sudo chmod 0700 secrets
-sudo chown 10001:10001 \
-  secrets/entitlement-es256-private.pem secrets/*-keyring.json \
-  secrets/admin-proxy-secret
-sudo chmod 0400 \
-  secrets/entitlement-es256-private.pem secrets/*-keyring.json \
-  secrets/admin-proxy-secret
+docker compose config --quiet
+docker compose up -d postgres clamav
 docker compose run --rm migrate
-docker compose run --rm admin-web admin operator bootstrap owner \
+docker compose run --rm --no-deps admin-web admin operator bootstrap owner \
   --display-name "Primary owner" --actor deployment \
   --reason "initial control-plane bootstrap"
-docker compose up -d
+docker compose up -d --no-deps management-server admin-web
+docker compose up -d --no-deps admin-worker
 ```
 
 The bootstrap command emits a ten-minute enrollment token. Activation-code batches and Team invitation tokens are encrypted, bound to the current administrator session, exposed through a separate ten-minute claim token, and cryptographically erased after acknowledgement.
@@ -903,7 +947,7 @@ Plaintext activation codes are printed once when issued. New codes use the canon
 - `SECURITY.md`, `docs/runbooks/incident-response.md`, and `docs/runbooks/key-rotation.md`: vulnerability reporting, incident response, and key/credential rotation
 - `docs/runbooks/backup-restore.md` and `docs/runbooks/release-rollback.md`: joint recovery points, restore acceptance, and digest-pinned rollout/rollback
 - `docker-compose.yml`: container deployment template
-- `.env.example`: container environment example
+- `.env.example`: non-secret Compose template with required deployment policy left empty
 - `deploy/systemd/`: explicit migrate, public, Admin Web and worker units for non-container Linux
 - `deploy/*.env.example`: role-separated non-container production environment templates
 - `docs/systemd-deployment.md`: systemd installation, upgrade, rollback and metrics contract
@@ -934,6 +978,14 @@ Logging configuration:
 - `CAMELLIA_NEXUS_HTTP_LOG_LEVEL`: HTTP request/response access-log level
 - `CAMELLIA_NEXUS_HTTP_FAILURE_LOG_LEVEL`: HTTP failure-log level
 - `CAMELLIA_NEXUS_LOG_FILTER`: optional full tracing filter expression
+
+Production diagnostics follow least disclosure. Issue, PR, and log evidence must never include a
+populated `.env`, full rendered `docker compose config`, full `docker inspect` environments,
+`nginx -T`, proxy-auth headers/values, secret contents, or secret hashes. Those outputs may also
+contain private domains, certificate names, internal addresses, backup identifiers, and customer
+data. Validate Compose structure with `docker compose config --quiet`; limit other evidence to
+selected non-sensitive version/health fields, file permissions, and boolean match results. Redact
+tenant, account, device, request, and infrastructure identifiers before sharing diagnostics.
 
 Runtime and maintenance configuration:
 

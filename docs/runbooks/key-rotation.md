@@ -76,12 +76,13 @@ run the reference queries in the [Team workspace contract](../team-workspace.md#
 
 This secret authenticates ingress-provided client addresses and has no multi-key overlap. Schedule a
 short Admin maintenance window: stop external Admin traffic, generate a staged replacement with
-`scripts/generate-proxy-secret.sh <staged-path>`, set its runtime ownership to `10001:10001` and mode
-to `0400`, then atomically install it and update the trusted
-proxy and every `admin-web` replica as one change, restart, then verify a known client address is
-audited and forged forwarding headers are ignored. Roll back both sides together. Never temporarily
-disable validation to avoid downtime. The mounted file is subject to the common 64 KiB secret-file
-ceiling, and its single header value must contain 32–256 visible ASCII characters.
+`scripts/generate-proxy-secret.sh <staged-path>`, apply the deployment's application-secret access
+policy, and verify that every effective `admin-web` identity can read the staged regular file while
+unrelated identities cannot. Atomically install it and update the trusted proxy and every
+`admin-web` replica as one change, restart, then verify a known client address is audited and forged
+forwarding headers are ignored. Roll back both sides together. Never temporarily disable validation
+to avoid downtime. The mounted file is subject to the common 64 KiB secret-file ceiling, and its
+single header value must contain 32–256 visible ASCII characters.
 
 ## PostgreSQL and object-store credentials
 

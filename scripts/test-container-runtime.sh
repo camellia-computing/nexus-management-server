@@ -68,6 +68,18 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 docker image inspect "$image" >/dev/null
+application_identity="$(docker image inspect --format '{{.Config.User}}' "$image")"
+if [[ ! "$application_identity" =~ ^([0-9]+):([0-9]+)$ ]]; then
+  echo "Runtime image must declare a numeric UID:GID" >&2
+  exit 1
+fi
+application_uid="${BASH_REMATCH[1]}"
+application_gid="${BASH_REMATCH[2]}"
+postgres_runtime_gid="$(docker run --rm --entrypoint sh "$postgres_image" -ec 'id -g postgres')"
+[[ "$postgres_runtime_gid" =~ ^[0-9]+$ ]] || {
+  echo "Pinned PostgreSQL image did not expose a numeric postgres GID" >&2
+  exit 1
+}
 docker network create "$network" >/dev/null
 database_name=nexus
 migrate_role=nexus_migrate
@@ -89,7 +101,7 @@ printf '%s\n' "$admin_web_password" >"$temporary_directory/database-secrets/data
 printf '%s\n' "$admin_worker_password" >"$temporary_directory/database-secrets/database-admin-worker-password"
 cp "$repository_root/deploy/postgres/init-runtime-roles.sh" \
   "$temporary_directory/database-secrets/10-runtime-roles.sh"
-chmod 0444 "$temporary_directory/database-secrets"/*
+chmod 0600 "$temporary_directory/database-secrets"/database-*-password
 chmod 0555 "$temporary_directory/database-secrets/10-runtime-roles.sh"
 if docker volume inspect "$secrets_volume" >/dev/null 2>&1; then
   echo "Refusing to reuse an existing runtime secrets volume: $secrets_volume" >&2
@@ -102,6 +114,14 @@ tar --create --directory "$temporary_directory/database-secrets" --file - \
   database-admin-worker-password 10-runtime-roles.sh |
   docker run --rm --interactive --volume "$secrets_volume:/run/secrets" --entrypoint tar \
     "$postgres_image" -xf - -C /run/secrets
+docker run --rm --volume "$secrets_volume:/run/secrets" --entrypoint sh \
+  --env APPLICATION_UID="$application_uid" --env POSTGRES_RUNTIME_GID="$postgres_runtime_gid" \
+  "$postgres_image" -ec '
+  chown "$APPLICATION_UID:$POSTGRES_RUNTIME_GID" /run/secrets/database-*-password
+  chmod 0440 /run/secrets/database-*-password
+  chown root:root /run/secrets/10-runtime-roles.sh
+  chmod 0555 /run/secrets/10-runtime-roles.sh
+'
 docker run --detach --name "$postgres" --network "$network" --network-alias postgres \
   --env "POSTGRES_DB=$database_name" \
   --env "POSTGRES_USER=$migrate_role" \
@@ -150,11 +170,17 @@ docker exec "$clamav" clamdscan --ping 1 >/dev/null
 "$repository_root/scripts/generate-keyring.sh" admin "$temporary_directory/admin-keyring.json" >/dev/null
 "$repository_root/scripts/generate-keyring.sh" workspace "$temporary_directory/workspace-keyring.json" >/dev/null
 "$repository_root/scripts/generate-keyring.sh" webhook "$temporary_directory/webhook-keyring.json" >/dev/null
-chmod 0444 "$temporary_directory/entitlement-private.pem" "$temporary_directory"/*-keyring.json
-tar --create --mode='a=r' --directory "$temporary_directory" --file - \
+chmod 0600 "$temporary_directory/entitlement-private.pem" "$temporary_directory"/*-keyring.json
+tar --create --directory "$temporary_directory" --file - \
   entitlement-private.pem admin-keyring.json workspace-keyring.json webhook-keyring.json |
   docker run --rm --interactive --volume "$secrets_volume:/run/secrets" --entrypoint tar \
     "$postgres_image" -xf - -C /run/secrets
+docker run --rm --volume "$secrets_volume:/run/secrets" --entrypoint sh \
+  --env APPLICATION_UID="$application_uid" --env APPLICATION_GID="$application_gid" \
+  "$postgres_image" -ec '
+  chown "$APPLICATION_UID:$APPLICATION_GID" /run/secrets/entitlement-private.pem /run/secrets/*-keyring.json
+  chmod 0400 /run/secrets/entitlement-private.pem /run/secrets/*-keyring.json
+'
 docker run --rm --volume "$secrets_volume:/run/secrets:ro" --entrypoint sh "$image" -ec '
   for secret in entitlement-private.pem admin-keyring.json workspace-keyring.json webhook-keyring.json \
       database-migrate-password database-public-password database-admin-web-password \
