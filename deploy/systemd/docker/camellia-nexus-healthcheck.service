@@ -1,0 +1,21 @@
+[Unit]
+Description=Verify Camellia Nexus Compose health
+Documentation=file:/usr/share/doc/camellia-nexus/compose-production.md
+Requires=docker.service
+After=docker.service camellia-nexus-compose.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/sbin/camellia-nexus-deploy status
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true

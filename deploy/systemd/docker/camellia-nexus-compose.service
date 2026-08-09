@@ -1,0 +1,38 @@
+[Unit]
+Description=Camellia Nexus production Compose stack
+Documentation=file:/usr/share/doc/camellia-nexus/compose-production.md
+Requires=docker.service camellia-nexus-secrets.service
+After=docker.service camellia-nexus-secrets.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/local/sbin/camellia-nexus-deploy boot
+ExecReload=/usr/local/sbin/camellia-nexus-deploy reconcile
+ExecStop=/usr/local/sbin/camellia-nexus-deploy stop
+TimeoutStartSec=10min
+TimeoutStopSec=5min
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadOnlyPaths=/etc/camellia-nexus /opt/camellia-nexus
+ReadWritePaths=/run /var/lib/camellia-nexus
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

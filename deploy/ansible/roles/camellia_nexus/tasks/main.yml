@@ -1,0 +1,215 @@
+---
+- name: Validate required Camellia Nexus deployment inputs
+  ansible.builtin.assert:
+    that:
+      - camellia_nexus_release_id | length > 0
+      - camellia_nexus_release_id is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
+      - camellia_nexus_release_id not in ['.', '..']
+      - camellia_nexus_install_root == '/opt/camellia-nexus'
+      - camellia_nexus_config_root == '/etc/camellia-nexus'
+      - camellia_nexus_release_source | length > 0
+      - camellia_nexus_release_evidence_source | length > 0
+      - camellia_nexus_sops_bundle_source | length > 0
+      - camellia_nexus_age_identity_source | length > 0
+      - (camellia_nexus_environment.CAMELLIA_NEXUS_LICENSE_IMAGE | default('')) is match('^.+@sha256:[0-9a-f]{64}$')
+      - (camellia_nexus_environment.CAMELLIA_NEXUS_LICENSE_ISSUER | default('')) is match('^https://')
+      - (camellia_nexus_environment.CAMELLIA_NEXUS_LICENSE_KEY_ID | default('')) is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
+      - >-
+        (camellia_nexus_environment.CAMELLIA_NEXUS_CLIENT_MINIMUM_VERSION | default(''))
+        is match('^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$')
+      - >-
+        (camellia_nexus_environment.CAMELLIA_NEXUS_CLIENT_RECOMMENDED_VERSION | default(''))
+        is match('^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$')
+      - >-
+        (camellia_nexus_environment.CAMELLIA_NEXUS_CLIENT_VERSION_ENFORCE_AFTER | default(''))
+        is match('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$')
+      - (camellia_nexus_environment.CAMELLIA_NEXUS_ADMIN_PUBLIC_ORIGIN | default('')) is match('^https://')
+      - (camellia_nexus_environment.CAMELLIA_NEXUS_OAUTH_REDIRECT_URIS | default('')) | length > 0
+      - (camellia_nexus_environment.CAMELLIA_NEXUS_CORS_ALLOWED_ORIGINS | default('')) | length > 0
+      - (camellia_nexus_environment.CAMELLIA_NEXUS_LICENSE_HOST_PORT | default('8088') | int) in range(1, 65536)
+      - (camellia_nexus_environment.CAMELLIA_NEXUS_LICENSE_METRICS_HOST_PORT | default('9091') | int) in range(1, 65536)
+      - (camellia_nexus_environment.CAMELLIA_NEXUS_ADMIN_HOST_PORT | default('8090') | int) in range(1, 65536)
+      - (camellia_nexus_environment.CAMELLIA_NEXUS_ADMIN_METRICS_HOST_PORT | default('9092') | int) in range(1, 65536)
+    fail_msg: Production requires formal release inputs plus explicit HTTPS identity, signing-key, and client-version policy.
+
+- name: Reject secret-looking values in the non-secret environment
+  ansible.builtin.assert:
+    that:
+      - item.key is match('^[A-Z][A-Z0-9_]{0,127}$')
+      - item.value is string
+      - item.value | length > 0
+      - (item.key | regex_search('(?i)(password|private|secret|keyring|token)')) is none or (item.key | regex_search('(?i)(_file|_path)$')) is not none
+      - item.key not in camellia_nexus_secret_source_variables
+      - "'\n' not in (item.value | string)"
+      - "'\r' not in (item.value | string)"
+    fail_msg: "{{ item.key }} must not be stored in config.env"
+  loop: "{{ camellia_nexus_environment | dict2items }}"
+  no_log: true
+  vars:
+    camellia_nexus_secret_source_variables:
+      - CAMELLIA_NEXUS_DATABASE_BOOTSTRAP_PASSWORD_FILE
+      - CAMELLIA_NEXUS_DATABASE_MIGRATE_PASSWORD_FILE
+      - CAMELLIA_NEXUS_DATABASE_PUBLIC_PASSWORD_FILE
+      - CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_PASSWORD_FILE
+      - CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_PASSWORD_FILE
+      - CAMELLIA_NEXUS_ENTITLEMENT_PRIVATE_KEY_FILE
+      - CAMELLIA_NEXUS_WORKSPACE_KEYRING_FILE
+      - CAMELLIA_NEXUS_WEBHOOK_KEYRING_FILE
+      - CAMELLIA_NEXUS_ADMIN_KEYRING_FILE
+      - CAMELLIA_NEXUS_ADMIN_PROXY_SECRET_FILE
+
+- name: Verify required host commands
+  ansible.builtin.command:
+    argv: "{{ item }}"
+  loop:
+    - [docker, --version]
+    - [sops, --version]
+    - [age, --version]
+    - [cosign, version]
+    - [jq, --version]
+    - [python3, --version]
+  changed_when: false
+
+- name: Verify the Docker Compose plugin
+  ansible.builtin.command:
+    argv: [docker, compose, version]
+  changed_when: false
+
+- name: Create immutable release and configuration directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ camellia_nexus_install_root }}", mode: "0755" }
+    - { path: "{{ camellia_nexus_install_root }}/releases", mode: "0755" }
+    - { path: "{{ camellia_nexus_install_root }}/releases/{{ camellia_nexus_release_id }}", mode: "0755" }
+    - { path: "{{ camellia_nexus_config_root }}", mode: "0700" }
+    - { path: "{{ camellia_nexus_config_root }}/sops", mode: "0700" }
+    - { path: /var/lib/camellia-nexus, mode: "0700" }
+    - { path: /usr/local/libexec/camellia-nexus, mode: "0755" }
+    - { path: /usr/share/doc/camellia-nexus, mode: "0755" }
+    - { path: /etc/systemd/system/docker.service.d, mode: "0755" }
+
+- name: Install the release Compose model
+  ansible.builtin.copy:
+    src: "{{ camellia_nexus_release_source }}/docker-compose.yml"
+    dest: "{{ camellia_nexus_install_root }}/releases/{{ camellia_nexus_release_id }}/compose.yaml"
+    owner: root
+    group: root
+    mode: "0444"
+    force: false
+
+- name: Install formal release evidence
+  ansible.builtin.copy:
+    src: "{{ camellia_nexus_release_evidence_source }}"
+    dest: "{{ camellia_nexus_install_root }}/releases/{{ camellia_nexus_release_id }}/release-evidence.json"
+    owner: root
+    group: root
+    mode: "0444"
+    force: false
+
+- name: Inspect immutable release files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+  loop:
+    - "{{ camellia_nexus_install_root }}/releases/{{ camellia_nexus_release_id }}/compose.yaml"
+    - "{{ camellia_nexus_install_root }}/releases/{{ camellia_nexus_release_id }}/release-evidence.json"
+  register: camellia_nexus_installed_release_files
+
+- name: Reject reuse of a release id with different bytes
+  ansible.builtin.assert:
+    that:
+      - >-
+        camellia_nexus_installed_release_files.results[0].stat.checksum ==
+        (lookup('ansible.builtin.file', camellia_nexus_release_source + '/docker-compose.yml', rstrip=false) | hash('sha256'))
+      - >-
+        camellia_nexus_installed_release_files.results[1].stat.checksum ==
+        (lookup('ansible.builtin.file', camellia_nexus_release_evidence_source, rstrip=false) | hash('sha256'))
+    fail_msg: The immutable release id already contains different Compose or evidence bytes.
+
+- name: Install encrypted production secrets
+  ansible.builtin.copy:
+    src: "{{ camellia_nexus_sops_bundle_source }}"
+    dest: "{{ camellia_nexus_config_root }}/secrets.sops.yaml"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Install the host age identity
+  ansible.builtin.copy:
+    src: "{{ camellia_nexus_age_identity_source }}"
+    dest: "{{ camellia_nexus_config_root }}/sops/age-identity.txt"
+    owner: root
+    group: root
+    mode: "0400"
+  no_log: true
+
+- name: Render non-secret production configuration
+  ansible.builtin.template:
+    src: config.env.j2
+    dest: "{{ camellia_nexus_config_root }}/config.env"
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Install deployment executables
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0555"
+  loop:
+    - src: "{{ role_path }}/../../../../scripts/stage-production-secrets.sh"
+      dest: /usr/local/libexec/camellia-nexus/stage-production-secrets
+    - src: "{{ role_path }}/../../../../scripts/camellia-nexus-deploy.sh"
+      dest: /usr/local/sbin/camellia-nexus-deploy
+    - src: "{{ role_path }}/../../../../scripts/validate-release-evidence.py"
+      dest: /usr/local/libexec/camellia-nexus/validate-release-evidence
+
+- name: Install Compose production documentation
+  ansible.builtin.copy:
+    src: "{{ role_path }}/../../../../docs/compose-production.md"
+    dest: /usr/share/doc/camellia-nexus/compose-production.md
+    owner: root
+    group: root
+    mode: "0444"
+
+- name: Install systemd units
+  ansible.builtin.copy:
+    src: "{{ role_path }}/../../../systemd/docker/{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - camellia-nexus-secrets.service
+    - camellia-nexus-compose.service
+    - camellia-nexus-healthcheck.service
+    - camellia-nexus-healthcheck.timer
+  notify: Reload systemd
+
+- name: Install Docker secret-ordering drop-in
+  ansible.builtin.copy:
+    src: "{{ role_path }}/../../../systemd/docker/docker.service.d/camellia-nexus-secrets.conf"
+    dest: /etc/systemd/system/docker.service.d/camellia-nexus-secrets.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Enable Camellia Nexus production units
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    daemon_reload: true
+  loop:
+    - camellia-nexus-secrets.service
+    - camellia-nexus-compose.service
+    - camellia-nexus-healthcheck.timer
+  when: camellia_nexus_enable_services

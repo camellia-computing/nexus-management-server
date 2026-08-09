@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically verify Camellia Nexus Compose health
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

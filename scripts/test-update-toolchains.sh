@@ -11,7 +11,7 @@ fixture="$(mktemp -d "${TMPDIR:-/tmp}/camellia-toolchains-test.XXXXXX")"
 trap 'rm -rf "$fixture"' EXIT
 
 mkdir -p "$fixture/admin-ui" "$fixture/scripts" "$fixture/docs" "$fixture/.github" \
-  "$fixture/deploy/postgres" "$fixture/deploy/systemd" "$fixture/src"
+  "$fixture/deploy/systemd" "$fixture/src"
 cp "$repository_root/.dockerignore" "$repository_root/.env.example" "$repository_root/.gitignore" \
   "$repository_root/.node-version" \
   "$repository_root/Cargo.toml" "$repository_root/rust-toolchain.toml" \
@@ -20,10 +20,12 @@ cp "$repository_root/admin-ui/package.json" "$repository_root/admin-ui/pnpm-work
   "$fixture/admin-ui/"
 cp "$repository_root/scripts/check-version-policy.sh" "$repository_root/scripts/update-toolchains.sh" "$fixture/scripts/"
 cp "$repository_root/scripts/build-e2e-bundle.sh" "$repository_root/scripts/provision-e2e-compose.sh" \
-  "$repository_root/scripts/test-container-runtime.sh" "$fixture/scripts/"
+  "$repository_root/scripts/test-container-runtime.sh" \
+  "$repository_root/scripts/stage-production-secrets.sh" \
+  "$repository_root/scripts/camellia-nexus-deploy.sh" \
+  "$fixture/scripts/"
 cp "$repository_root/docs/dependency-management.md" "$fixture/docs/"
 cp "$repository_root/deploy/"*.env.example "$fixture/deploy/"
-cp "$repository_root/deploy/postgres/init-runtime-roles.sh" "$fixture/deploy/postgres/"
 cp "$repository_root/deploy/systemd/"*.service "$fixture/deploy/systemd/"
 cp "$repository_root/src/admin_jobs.rs" "$repository_root/src/main.rs" "$fixture/src/"
 cp -R "$repository_root/.github/workflows" "$fixture/.github/"

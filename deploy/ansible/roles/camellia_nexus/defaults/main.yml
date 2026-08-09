@@ -1,0 +1,10 @@
+---
+camellia_nexus_install_root: /opt/camellia-nexus
+camellia_nexus_config_root: /etc/camellia-nexus
+camellia_nexus_release_id: ""
+camellia_nexus_release_source: ""
+camellia_nexus_release_evidence_source: ""
+camellia_nexus_sops_bundle_source: ""
+camellia_nexus_age_identity_source: ""
+camellia_nexus_environment: {}
+camellia_nexus_enable_services: true

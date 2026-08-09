@@ -212,14 +212,12 @@ addresses, customer data, credentials, or machine-local procedures here.
 - Production secrets come from restricted files or the deployment secret system, not ordinary
   environment values, JSON state, command lines, logs, images, tickets, or frontend stores.
 - Secret generators use `umask 077`, publish atomically, refuse overwrite, and write only to ignored
-  locations. Secret access is an outcome-based boundary, not a fixed host ownership recipe: each
-  intended container identity must be able to read only its required files, and unrelated host or
-  container identities must not. Resolve effective identities from immutable image metadata and the
-  runtime security context; do not present image-specific numeric identities as portable host
-  ownership requirements. A local bind may use restricted owner/group permissions, an ACL, or
-  deployment-platform secret mapping as long as target-identity read probes and fresh-volume
-  bootstrap pass. Keep the enclosing deployment directory restricted and never make a secret
-  globally readable.
+  locations. Single-host production Compose decrypts secrets into a `root:root 0700` `/run` staging
+  directory and projects only each service's authorized `root:root 0444` files as read-only mounts.
+  The root-only parent, per-service projection, and container isolation form the access boundary;
+  host ownership never depends on image-internal numeric UID/GID values. A deployment whose policy
+  forbids this projection mode must use an orchestrator-native secret mechanism that can assign an
+  independent mode per mount, rather than host `chown` rules.
 - Deployment-specific domains, addresses, host ports, compatible client versions, certificate names,
   and backup identifiers belong only in ignored local configuration or the deployment platform. Keep
   committed examples on reserved domains and generic loopback/default ports; never copy production

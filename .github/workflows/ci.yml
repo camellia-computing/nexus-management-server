@@ -231,14 +231,18 @@ jobs:
           bash scripts/test-key-generators.sh
           bash scripts/test-database-secret-boundary.sh
           bash scripts/test-systemd-deployment.sh
+          bash scripts/test-compose-production-deployment.sh
           bash -n \
             scripts/build-e2e-bundle.sh \
+            scripts/camellia-nexus-deploy.sh \
             scripts/manage-release.sh \
             scripts/publish_image_release.sh \
             scripts/provision-e2e-compose.sh \
             scripts/reconcile_image_latest.sh \
             scripts/resolve-container-registries.sh \
+            scripts/stage-production-secrets.sh \
             scripts/test-systemd-deployment.sh \
+            scripts/test-compose-production-deployment.sh \
             scripts/test-database-secret-boundary.sh \
             scripts/test-container-runtime.sh \
             scripts/test-manage-release.sh \

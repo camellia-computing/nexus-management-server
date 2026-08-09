@@ -28,6 +28,7 @@ cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
 bash scripts/test-systemd-deployment.sh
+bash scripts/test-compose-production-deployment.sh
 node scripts/check-cross-repo-contract.mjs
 node scripts/test-cross-repo-contract.mjs
 pnpm --dir admin-ui install --frozen-lockfile
@@ -50,8 +51,10 @@ control is intentionally relocated. Normal repository-local execution derives
 the root automatically; formal publication passes and validates the exact tag
 checkout explicitly.
 
-The runtime test creates an isolated PostgreSQL database with a schema owner plus three
-least-privilege runtime logins, enrollment factors and sessions, accounts, Team licenses, one-time
+The runtime test creates an isolated PostgreSQL database with a dedicated bootstrap identity, a
+non-superuser schema owner, and three least-privilege runtime logins. It verifies idempotent role
+reconciliation, drift repair, legacy-superuser adoption, UID-independent secret projection,
+enrollment factors and sessions, accounts, Team licenses, one-time
 deliveries, billing fixtures, a synthetic PDF, a pinned ClamAV scanner, worker, and hardened runtime
 containers. It proves the public login cannot read Admin identities or create schema objects and the
 Worker cannot read password credentials. A disposable pre-expired browser session proves the real step-up

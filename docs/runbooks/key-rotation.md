@@ -75,23 +75,28 @@ run the reference queries in the [Team workspace contract](../team-workspace.md#
 ## Admin forwarded-address proxy secret
 
 This secret authenticates ingress-provided client addresses and has no multi-key overlap. Schedule a
-short Admin maintenance window: stop external Admin traffic, generate a staged replacement with
-`scripts/generate-proxy-secret.sh <staged-path>`, apply the deployment's application-secret access
-policy, and verify that every effective `admin-web` identity can read the staged regular file while
-unrelated identities cannot. Atomically install it and update the trusted proxy and every
-`admin-web` replica as one change, restart, then verify a known client address is audited and forged
-forwarding headers are ignored. Roll back both sides together. Never temporarily disable validation
-to avoid downtime. The mounted file is subject to the common 64 KiB secret-file ceiling, and its
-single header value must contain 32–256 visible ASCII characters.
+short Admin maintenance window: stop external Admin traffic, generate the replacement into the
+reviewed SOPS source, and use the production deployment entrypoint to project the complete bundle as
+`root:root 0444` below the `root:root 0700` `/run/camellia-nexus/secrets` parent. Atomically update the trusted
+proxy, then run `camellia-nexus-deploy reconcile` to force-recreate every runtime against the new
+projection. Verify that a known client address is
+audited and forged forwarding headers are ignored. Roll back both sides together. Never temporarily
+disable validation to avoid downtime. The mounted file is subject to the common 64 KiB secret-file
+ceiling, and its single header value must contain 32–256 visible ASCII characters.
 
 ## PostgreSQL and object-store credentials
 
-Create a new least-privilege credential first and test it from an isolated deployment. Quiesce
-workers and writes, atomically update deployment secret files, roll `migrate`/public/Admin/worker
-roles, verify readiness and a transaction, then revoke the old credential at the authority. If the
-database account cannot overlap credentials, use a maintenance window and update the password only
-after all writers are stopped. Do not embed reserved characters unescaped in a Compose URL; use a
-URL-safe generated value or a correctly percent-encoded secret.
+For single-host Compose, change exactly one database password in the reviewed SOPS bundle and run
+`camellia-nexus-deploy rotate-database-password <role>`. The command validates a non-active candidate
+projection, authenticates with the active bootstrap file, reconciles the database transactionally,
+atomically activates the candidate, and recreates the affected service. It rejects a bundle that
+changes any other secret. Verify readiness and a representative transaction before closing the
+change. Do not put a password in a Compose URL, command line, ordinary environment value, or log.
+
+For native systemd or an external object-store authority, create an overlapping least-privilege
+credential where supported, validate it in isolation, roll every consumer, and revoke the old value
+only after readiness and transaction checks. An authority that cannot overlap credentials requires a
+reviewed maintenance window.
 
 ## GitHub Release App and registry authority
 
