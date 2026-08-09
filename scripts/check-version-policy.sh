@@ -213,6 +213,53 @@ amd64_platform_count="$({ grep -hEc 'platforms:[[:space:]]+linux/amd64' "${workf
 if grep -q '"curl"' docker-compose.yml; then
   fail 'Compose healthchecks must not depend on a runtime curl package'
 fi
+[[ "$(grep -Fc 'CAMELLIA_NEXUS_DATABASE_MIGRATE: false' docker-compose.yml)" == 3 ]] ||
+  fail 'every long-lived Compose role must explicitly disable automatic migrations'
+for required_policy in \
+  'CAMELLIA_NEXUS_LICENSE_ISSUER: ${CAMELLIA_NEXUS_LICENSE_ISSUER:?' \
+  'CAMELLIA_NEXUS_LICENSE_KEY_ID: ${CAMELLIA_NEXUS_LICENSE_KEY_ID:?' \
+  'CAMELLIA_NEXUS_CLIENT_MINIMUM_VERSION: ${CAMELLIA_NEXUS_CLIENT_MINIMUM_VERSION:?' \
+  'CAMELLIA_NEXUS_CLIENT_RECOMMENDED_VERSION: ${CAMELLIA_NEXUS_CLIENT_RECOMMENDED_VERSION:?' \
+  'CAMELLIA_NEXUS_CLIENT_VERSION_ENFORCE_AFTER: "${CAMELLIA_NEXUS_CLIENT_VERSION_ENFORCE_AFTER:?' \
+  'CAMELLIA_NEXUS_ADMIN_PUBLIC_ORIGIN: ${CAMELLIA_NEXUS_ADMIN_PUBLIC_ORIGIN:?'; do
+  grep -Fq "$required_policy" docker-compose.yml ||
+    fail "Compose must require deployment policy: $required_policy"
+done
+for host_port in \
+  CAMELLIA_NEXUS_LICENSE_HOST_PORT \
+  CAMELLIA_NEXUS_LICENSE_METRICS_HOST_PORT \
+  CAMELLIA_NEXUS_ADMIN_HOST_PORT \
+  CAMELLIA_NEXUS_ADMIN_METRICS_HOST_PORT; do
+  grep -Fq "127.0.0.1:\${${host_port}:-" docker-compose.yml ||
+    fail "Compose must keep ${host_port} on host loopback"
+done
+if grep -Eq 'CAMELLIA_NEXUS_(LICENSE_ISSUER|ADMIN_PUBLIC_ORIGIN):[[:space:]]+https://' docker-compose.yml; then
+  fail 'Compose must not hard-code deployment domains'
+fi
+if grep -Eq '^DATABASE_URL=postgres://[^@/]+:[^@]*@' .env.example; then
+  fail '.env.example must not embed a database password in DATABASE_URL'
+fi
+for required_template_value in \
+  CAMELLIA_NEXUS_LICENSE_IMAGE \
+  CAMELLIA_NEXUS_LICENSE_ISSUER \
+  CAMELLIA_NEXUS_LICENSE_KEY_ID \
+  CAMELLIA_NEXUS_CLIENT_MINIMUM_VERSION \
+  CAMELLIA_NEXUS_CLIENT_RECOMMENDED_VERSION \
+  CAMELLIA_NEXUS_CLIENT_VERSION_ENFORCE_AFTER \
+  CAMELLIA_NEXUS_ADMIN_PUBLIC_ORIGIN; do
+  grep -Fxq "${required_template_value}=" .env.example ||
+    fail ".env.example must leave ${required_template_value} empty for fail-closed operator input"
+done
+grep -Fxq '/.env.*' .gitignore || fail 'root environment variants must be ignored'
+grep -Fxq '!/.env.example' .gitignore || fail 'the non-secret environment template must remain tracked'
+for private_override in \
+  /docker-compose.override.yml \
+  /docker-compose.override.yaml \
+  /compose.override.yml \
+  /compose.override.yaml; do
+  grep -Fxq "$private_override" .gitignore ||
+    fail "private deployment override must be ignored: $private_override"
+done
 
 while IFS= read -r reference; do
   [[ "$reference" == \$\{* ]] && continue
@@ -235,9 +282,10 @@ runtime_clamav_version="$(sed -nE 's|^clamav/clamav:([0-9]+\.[0-9]+\.[0-9]+)@sha
   fail 'Compose and the runtime test must use the same exact ClamAV patch'
 grep -Fq -- '- postgres-18-data:/var/lib/postgresql' docker-compose.yml ||
   fail 'PostgreSQL 18 Compose data must be mounted at /var/lib/postgresql'
-grep -Fq './deploy/postgres/init-runtime-roles.sh:/docker-entrypoint-initdb.d/10-runtime-roles.sh:ro' \
-  docker-compose.yml ||
-  fail 'Compose must create separate unprivileged database runtime roles on first start'
+grep -Fq 'source: ./deploy/postgres/init-runtime-roles.sh' docker-compose.yml &&
+  grep -Fq 'target: /docker-entrypoint-initdb.d/10-runtime-roles.sh' docker-compose.yml &&
+  grep -Fq 'create_host_path: false' docker-compose.yml ||
+  fail 'Compose must reject a missing PostgreSQL runtime-role initializer before first start'
 for role in MIGRATE PUBLIC ADMIN_WEB ADMIN_WORKER; do
   grep -Fq "CAMELLIA_NEXUS_DATABASE_${role}_PASSWORD_FILE" docker-compose.yml ||
     fail "Compose is missing the ${role} database credential boundary"
@@ -246,6 +294,12 @@ for secret in database_migrate_password database_public_password database_admin_
   grep -Fq "$secret" docker-compose.yml ||
     fail "Compose is missing the ${secret} Docker secret"
 done
+grep -Fq 'chown "$APPLICATION_UID:$POSTGRES_RUNTIME_GID" /run/secrets/database-*-password' scripts/test-container-runtime.sh &&
+  grep -Fq 'chmod 0440 /run/secrets/database-*-password' scripts/test-container-runtime.sh ||
+  fail 'the runtime smoke must grant only the resolved application/PostgreSQL identities database-secret access'
+grep -Fq 'chown "$APPLICATION_UID:$APPLICATION_GID" /run/secrets/entitlement-private.pem' scripts/test-container-runtime.sh &&
+  grep -Fq 'chmod 0400 /run/secrets/entitlement-private.pem' scripts/test-container-runtime.sh ||
+  fail 'the runtime smoke must grant only the resolved application identity application-secret access'
 if grep -Eq 'CAMELLIA_NEXUS_DATABASE_(MIGRATE|PUBLIC|ADMIN_WEB|ADMIN_WORKER)_PASSWORD:' docker-compose.yml; then
   fail 'Compose must not expose database passwords as environment values'
 fi

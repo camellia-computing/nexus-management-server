@@ -12,7 +12,8 @@ trap 'rm -rf "$fixture"' EXIT
 
 mkdir -p "$fixture/admin-ui" "$fixture/scripts" "$fixture/docs" "$fixture/.github" \
   "$fixture/deploy/postgres" "$fixture/deploy/systemd" "$fixture/src"
-cp "$repository_root/.dockerignore" "$repository_root/.node-version" \
+cp "$repository_root/.dockerignore" "$repository_root/.env.example" "$repository_root/.gitignore" \
+  "$repository_root/.node-version" \
   "$repository_root/Cargo.toml" "$repository_root/rust-toolchain.toml" \
   "$repository_root/Dockerfile" "$repository_root/docker-compose.yml" "$fixture/"
 cp "$repository_root/admin-ui/package.json" "$repository_root/admin-ui/pnpm-workspace.yaml" \

@@ -212,8 +212,22 @@ addresses, customer data, credentials, or machine-local procedures here.
 - Production secrets come from restricted files or the deployment secret system, not ordinary
   environment values, JSON state, command lines, logs, images, tickets, or frontend stores.
 - Secret generators use `umask 077`, publish atomically, refuse overwrite, and write only to ignored
-  locations. Runtime files mounted into the image must be readable by numeric UID/GID `10001:10001`
-  with the narrowest mode.
+  locations. Secret access is an outcome-based boundary, not a fixed host ownership recipe: each
+  intended container identity must be able to read only its required files, and unrelated host or
+  container identities must not. The current application image declares numeric UID/GID
+  `10001:10001`; derive the PostgreSQL identity from the pinned image. A local bind may use a narrow
+  owner/group mode, an ACL, or deployment-platform UID remapping as long as runtime access probes and
+  fresh-volume bootstrap pass. Keep the enclosing deployment directory restricted and never make a
+  secret globally readable.
+- Deployment-specific domains, addresses, host ports, compatible client versions, certificate names,
+  and backup identifiers belong only in ignored local configuration or the deployment platform. Keep
+  committed examples on reserved domains and generic loopback/default ports; never copy production
+  infrastructure identifiers into source, PR descriptions, fixtures, or durable repository docs.
+- Diagnostics must not print populated `.env` files, rendered Compose environments, full
+  `docker inspect` environments, `nginx -T` output, proxy-auth values, secret contents, or secret
+  hashes. Prefer `docker compose config --quiet`, selected non-sensitive health/version fields, and
+  boolean permission/match results. Redact tenant, account, device, request, and infrastructure
+  identifiers before attaching logs to issues or Actions artifacts.
 - Entitlement private key, Admin keyring, Workspace keyring, Webhook keyring, and forwarded-address
   proxy secret are independent trust domains. Never reuse roots or remove an old key while a row or
   unexpired artifact still references it.

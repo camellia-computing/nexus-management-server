@@ -1,11 +1,11 @@
 x-common-environment: &common-environment
   CAMELLIA_NEXUS_LICENSE_ENV: production
-  CAMELLIA_NEXUS_LOG_FORMAT: json
-  CAMELLIA_NEXUS_LOG_LEVEL: info
-  CAMELLIA_NEXUS_HTTP_LOG_LEVEL: info
-  CAMELLIA_NEXUS_HTTP_FAILURE_LOG_LEVEL: warn
-  CAMELLIA_NEXUS_DATABASE_MAX_CONNECTIONS: 8
-  CAMELLIA_NEXUS_DATABASE_ACQUIRE_TIMEOUT_SECONDS: 5
+  CAMELLIA_NEXUS_LOG_FORMAT: ${CAMELLIA_NEXUS_LOG_FORMAT:-json}
+  CAMELLIA_NEXUS_LOG_LEVEL: ${CAMELLIA_NEXUS_LOG_LEVEL:-info}
+  CAMELLIA_NEXUS_HTTP_LOG_LEVEL: ${CAMELLIA_NEXUS_HTTP_LOG_LEVEL:-info}
+  CAMELLIA_NEXUS_HTTP_FAILURE_LOG_LEVEL: ${CAMELLIA_NEXUS_HTTP_FAILURE_LOG_LEVEL:-warn}
+  CAMELLIA_NEXUS_DATABASE_MAX_CONNECTIONS: ${CAMELLIA_NEXUS_DATABASE_MAX_CONNECTIONS:-8}
+  CAMELLIA_NEXUS_DATABASE_ACQUIRE_TIMEOUT_SECONDS: ${CAMELLIA_NEXUS_DATABASE_ACQUIRE_TIMEOUT_SECONDS:-5}
 
 x-container-hardening: &container-hardening
   read_only: true
@@ -54,29 +54,29 @@ services:
       DATABASE_PASSWORD_FILE: /run/secrets/database_public_password
       CAMELLIA_NEXUS_LICENSE_BIND: 0.0.0.0:8088
       CAMELLIA_NEXUS_LICENSE_STORAGE: postgres
-      CAMELLIA_NEXUS_LICENSE_ISSUER: https://license.example.com
-      CAMELLIA_NEXUS_LICENSE_AUDIENCE: camellia-nexus-desktop
-      CAMELLIA_NEXUS_LICENSE_KEY_ID: entitlement-2026-00
+      CAMELLIA_NEXUS_LICENSE_ISSUER: ${CAMELLIA_NEXUS_LICENSE_ISSUER:?set the production HTTPS issuer}
+      CAMELLIA_NEXUS_LICENSE_AUDIENCE: ${CAMELLIA_NEXUS_LICENSE_AUDIENCE:-camellia-nexus-desktop}
+      CAMELLIA_NEXUS_LICENSE_KEY_ID: ${CAMELLIA_NEXUS_LICENSE_KEY_ID:?set the active entitlement key id}
       CAMELLIA_NEXUS_LICENSE_PRIVATE_KEY_PEM_PATH: /run/secrets/entitlement_private_key
       CAMELLIA_NEXUS_WORKSPACE_KEYRING_PATH: /run/secrets/workspace_keyring
       CAMELLIA_NEXUS_WEBHOOK_KEYRING_PATH: /run/secrets/webhook_keyring
-      CAMELLIA_NEXUS_OAUTH_CLIENT_ID: camellia-nexus-desktop
-      CAMELLIA_NEXUS_OAUTH_REDIRECT_URIS: camellia-nexus://auth/callback
-      CAMELLIA_NEXUS_CLIENT_MINIMUM_VERSION: 1.0.0
-      CAMELLIA_NEXUS_CLIENT_RECOMMENDED_VERSION: 1.0.0
-      CAMELLIA_NEXUS_CLIENT_VERSION_ENFORCE_AFTER: "2030-01-01T00:00:00Z"
-      CAMELLIA_NEXUS_CORS_ALLOWED_ORIGINS: camellia-nexus://localhost
+      CAMELLIA_NEXUS_OAUTH_CLIENT_ID: ${CAMELLIA_NEXUS_OAUTH_CLIENT_ID:-camellia-nexus-desktop}
+      CAMELLIA_NEXUS_OAUTH_REDIRECT_URIS: ${CAMELLIA_NEXUS_OAUTH_REDIRECT_URIS:-camellia-nexus://auth/callback}
+      CAMELLIA_NEXUS_CLIENT_MINIMUM_VERSION: ${CAMELLIA_NEXUS_CLIENT_MINIMUM_VERSION:?set the minimum supported client version}
+      CAMELLIA_NEXUS_CLIENT_RECOMMENDED_VERSION: ${CAMELLIA_NEXUS_CLIENT_RECOMMENDED_VERSION:?set the recommended client version}
+      CAMELLIA_NEXUS_CLIENT_VERSION_ENFORCE_AFTER: "${CAMELLIA_NEXUS_CLIENT_VERSION_ENFORCE_AFTER:?set the absolute client-version enforcement time}"
+      CAMELLIA_NEXUS_CORS_ALLOWED_ORIGINS: ${CAMELLIA_NEXUS_CORS_ALLOWED_ORIGINS:-camellia-nexus://localhost}
       CAMELLIA_NEXUS_DATABASE_MIGRATE: false
-      CAMELLIA_NEXUS_TIME_MAX_FORWARD_JUMP_SECONDS: 86400
-      CAMELLIA_NEXUS_HTTP_REQUEST_TIMEOUT_SECONDS: 15
-      CAMELLIA_NEXUS_HTTP_MAX_IN_FLIGHT: 256
-      CAMELLIA_NEXUS_MAINTENANCE_INTERVAL_SECONDS: 3600
-      CAMELLIA_NEXUS_CLEANUP_BATCH_SIZE: 1000
+      CAMELLIA_NEXUS_TIME_MAX_FORWARD_JUMP_SECONDS: ${CAMELLIA_NEXUS_TIME_MAX_FORWARD_JUMP_SECONDS:-86400}
+      CAMELLIA_NEXUS_HTTP_REQUEST_TIMEOUT_SECONDS: ${CAMELLIA_NEXUS_HTTP_REQUEST_TIMEOUT_SECONDS:-15}
+      CAMELLIA_NEXUS_HTTP_MAX_IN_FLIGHT: ${CAMELLIA_NEXUS_HTTP_MAX_IN_FLIGHT:-256}
+      CAMELLIA_NEXUS_MAINTENANCE_INTERVAL_SECONDS: ${CAMELLIA_NEXUS_MAINTENANCE_INTERVAL_SECONDS:-3600}
+      CAMELLIA_NEXUS_CLEANUP_BATCH_SIZE: ${CAMELLIA_NEXUS_CLEANUP_BATCH_SIZE:-1000}
       CAMELLIA_NEXUS_METRICS_BIND: 0.0.0.0:9091
       CAMELLIA_NEXUS_METRICS_ALLOW_NON_LOOPBACK: "true"
     ports:
-      - "127.0.0.1:8088:8088"
-      - "127.0.0.1:9091:9091"
+      - "127.0.0.1:${CAMELLIA_NEXUS_LICENSE_HOST_PORT:-8088}:8088"
+      - "127.0.0.1:${CAMELLIA_NEXUS_LICENSE_METRICS_HOST_PORT:-9091}:9091"
     secrets:
       - database_public_password
       - entitlement_private_key
@@ -102,22 +102,23 @@ services:
       <<: *common-environment
       DATABASE_URL: postgres://${CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_ROLE:-nexus_admin_web}@postgres:5432/${CAMELLIA_NEXUS_DATABASE_NAME:-nexus}
       DATABASE_PASSWORD_FILE: /run/secrets/database_admin_web_password
+      CAMELLIA_NEXUS_DATABASE_MIGRATE: false
       CAMELLIA_NEXUS_ADMIN_BIND: 0.0.0.0:8090
-      CAMELLIA_NEXUS_ADMIN_PUBLIC_ORIGIN: https://console.example.com
-      CAMELLIA_NEXUS_ADMIN_REQUEST_TIMEOUT_SECONDS: 180
-      CAMELLIA_NEXUS_ADMIN_MAX_IN_FLIGHT: 64
+      CAMELLIA_NEXUS_ADMIN_PUBLIC_ORIGIN: ${CAMELLIA_NEXUS_ADMIN_PUBLIC_ORIGIN:?set the private Admin HTTPS origin}
+      CAMELLIA_NEXUS_ADMIN_REQUEST_TIMEOUT_SECONDS: ${CAMELLIA_NEXUS_ADMIN_REQUEST_TIMEOUT_SECONDS:-180}
+      CAMELLIA_NEXUS_ADMIN_MAX_IN_FLIGHT: ${CAMELLIA_NEXUS_ADMIN_MAX_IN_FLIGHT:-64}
       CAMELLIA_NEXUS_ADMIN_KEYRING_PATH: /run/secrets/admin_keyring
       CAMELLIA_NEXUS_ADMIN_FORWARDED_FOR_SECRET_PATH: /run/secrets/admin_proxy_secret
       CAMELLIA_NEXUS_OBJECT_STORAGE: database
-      CAMELLIA_NEXUS_OBJECT_HARD_LIMIT_BYTES: 21474836480
-      CAMELLIA_NEXUS_OBJECT_MAX_BYTES: 67108864
+      CAMELLIA_NEXUS_OBJECT_HARD_LIMIT_BYTES: ${CAMELLIA_NEXUS_OBJECT_HARD_LIMIT_BYTES:-21474836480}
+      CAMELLIA_NEXUS_OBJECT_MAX_BYTES: ${CAMELLIA_NEXUS_OBJECT_MAX_BYTES:-67108864}
       CAMELLIA_NEXUS_EVIDENCE_SCANNER: clamav
       CAMELLIA_NEXUS_CLAMAV_ADDRESS: clamav:3310
       CAMELLIA_NEXUS_METRICS_BIND: 0.0.0.0:9092
       CAMELLIA_NEXUS_METRICS_ALLOW_NON_LOOPBACK: "true"
     ports:
-      - "127.0.0.1:8090:8090"
-      - "127.0.0.1:9092:9092"
+      - "127.0.0.1:${CAMELLIA_NEXUS_ADMIN_HOST_PORT:-8090}:8090"
+      - "127.0.0.1:${CAMELLIA_NEXUS_ADMIN_METRICS_HOST_PORT:-9092}:9092"
     secrets:
       - database_admin_web_password
       - admin_keyring
@@ -141,10 +142,11 @@ services:
       <<: *common-environment
       DATABASE_URL: postgres://${CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_ROLE:-nexus_admin_worker}@postgres:5432/${CAMELLIA_NEXUS_DATABASE_NAME:-nexus}
       DATABASE_PASSWORD_FILE: /run/secrets/database_admin_worker_password
+      CAMELLIA_NEXUS_DATABASE_MIGRATE: false
       CAMELLIA_NEXUS_ADMIN_KEYRING_PATH: /run/secrets/admin_keyring
       CAMELLIA_NEXUS_OBJECT_STORAGE: database
-      CAMELLIA_NEXUS_OBJECT_HARD_LIMIT_BYTES: 21474836480
-      CAMELLIA_NEXUS_OBJECT_MAX_BYTES: 67108864
+      CAMELLIA_NEXUS_OBJECT_HARD_LIMIT_BYTES: ${CAMELLIA_NEXUS_OBJECT_HARD_LIMIT_BYTES:-21474836480}
+      CAMELLIA_NEXUS_OBJECT_MAX_BYTES: ${CAMELLIA_NEXUS_OBJECT_MAX_BYTES:-67108864}
       CAMELLIA_NEXUS_EVIDENCE_SCANNER: clamav
       CAMELLIA_NEXUS_CLAMAV_ADDRESS: clamav:3310
       CAMELLIA_NEXUS_METRICS_BIND: 0.0.0.0:9093
@@ -184,7 +186,12 @@ services:
       retries: 20
     volumes:
       - postgres-18-data:/var/lib/postgresql
-      - ./deploy/postgres/init-runtime-roles.sh:/docker-entrypoint-initdb.d/10-runtime-roles.sh:ro
+      - type: bind
+        source: ./deploy/postgres/init-runtime-roles.sh
+        target: /docker-entrypoint-initdb.d/10-runtime-roles.sh
+        read_only: true
+        bind:
+          create_host_path: false
     secrets:
       - database_migrate_password
       - database_public_password
@@ -202,15 +209,15 @@ secrets:
   database_admin_worker_password:
     file: ${CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_PASSWORD_FILE:-./secrets/database-admin-worker-password}
   entitlement_private_key:
-    file: ./secrets/entitlement-es256-private.pem
+    file: ${CAMELLIA_NEXUS_ENTITLEMENT_PRIVATE_KEY_FILE:-./secrets/entitlement-es256-private.pem}
   workspace_keyring:
-    file: ./secrets/workspace-keyring.json
+    file: ${CAMELLIA_NEXUS_WORKSPACE_KEYRING_FILE:-./secrets/workspace-keyring.json}
   webhook_keyring:
-    file: ./secrets/webhook-keyring.json
+    file: ${CAMELLIA_NEXUS_WEBHOOK_KEYRING_FILE:-./secrets/webhook-keyring.json}
   admin_keyring:
-    file: ./secrets/admin-keyring.json
+    file: ${CAMELLIA_NEXUS_ADMIN_KEYRING_FILE:-./secrets/admin-keyring.json}
   admin_proxy_secret:
-    file: ./secrets/admin-proxy-secret
+    file: ${CAMELLIA_NEXUS_ADMIN_PROXY_SECRET_FILE:-./secrets/admin-proxy-secret}
 
 volumes:
   postgres-18-data:
