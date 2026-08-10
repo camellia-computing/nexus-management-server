@@ -3,7 +3,7 @@
 This file is the durable starting point for review and implementation in the management-server
 repository. Keep it synchronized with the current service, administration UI, database schema,
 deployment, and desktop contract. Do not record transient Actions runs, release digests, deployment
-addresses, customer data, credentials, or machine-local procedures here.
+addresses, production data, credentials, or environment-specific procedures here.
 
 ## Product and authority model
 
@@ -215,10 +215,10 @@ addresses, customer data, credentials, or machine-local procedures here.
   locations. Single-host production Compose stores secrets below a `root:root 0700` project
   directory and projects each service's authorized `root:root 0444` file as a read-only mount.
   The root-only parent, per-service projection, and container isolation form the access boundary;
-  host ownership never depends on image-internal numeric UID/GID values. A deployment whose policy
-  custody system may produce these root-owned files, but is not a runtime dependency of Compose.
+  host ownership never depends on image-internal numeric UID/GID values. An approved external secret
+  manager may produce these root-owned files, but is not a runtime dependency of Compose.
 - Deployment-specific domains, addresses, host ports, compatible client versions, certificate names,
-  and backup identifiers belong only in ignored local configuration or the deployment platform. Keep
+  and backup identifiers belong only in deployment configuration excluded from source control. Keep
   committed examples on reserved domains and generic loopback/default ports; never copy production
   infrastructure identifiers into source, PR descriptions, fixtures, or durable repository docs.
 - Diagnostics must not print populated `.env` files, rendered Compose environments, full

@@ -9,14 +9,15 @@ startup, stops unrelated containers, or performs global cleanup.
 
 ## Filesystem contract / 文件系统契约
 
-Run the project from `/usr/local/etc/docker/camellianexus-server` (or another dedicated project
-directory):
+Create a dedicated directory according to the deployment environment's filesystem policy and run
+Compose from that directory:
 
 ```text
-docker-compose.yml   root:root 0644
-.env                 root:root 0600, non-secret values only
-secrets/             root:root 0700
-secrets/*            root:root 0444, regular non-symlink files
+<deployment-directory>/
+├── docker-compose.yml   root:root 0644
+├── .env                 root:root 0600, non-secret values only
+└── secrets/             root:root 0700
+    └── *                root:root 0444, regular non-symlink files
 ```
 
 The `secrets/` directory is the host-side source for Compose file secrets. `0444` is intentional:
@@ -33,8 +34,8 @@ mv -T secrets/name.next secrets/name
 ```
 
 The deployment `.env` contains image digests, URLs, ports, and runtime policy only. It must not
-contain a password, private key, keyring, token, or proxy secret. SOPS, Vault, or another custody
-system may be used to produce the root-owned files, but is not a runtime dependency of Compose.
+contain a password, private key, keyring, token, or proxy secret. An approved external secret-
+management system may produce the root-owned files, but is not a runtime dependency of Compose.
 
 ## Database identities / 数据库身份
 
@@ -133,8 +134,8 @@ file. Existing connections and processes do not reload those files automatically
 - A host reboot does not require secret staging because the root-only source files are persistent.
 - Roll back by changing the application image digest to a migration-compatible release and running
   the same ordered commands. Do not delete volumes or run `docker system prune`.
-- Monitor `/healthz`, `/readyz`, and the private metrics listeners through the host's existing
-  monitoring system. This repository does not install a health timer.
+- Integrate `/healthz`, `/readyz`, and the non-public metrics endpoints with the deployment
+  environment's monitoring platform. This repository does not install a health timer.
 - `docker compose down` is project-scoped. Never use `down -v` in production.
 
 ## Verification / 验证
@@ -142,4 +143,5 @@ file. Existing connections and processes do not reload those files automatically
 CI and release checks must cover a fresh volume, repeated reconcile, role and ownership drift,
 secret permissions, atomic secret replacement, targeted container recreation, readiness, and a
 sentinel container from an unrelated Compose project. The test must assert that no Docker daemon
-drop-in, project systemd unit, release-state directory, or SOPS runtime dependency is installed.
+drop-in, project systemd unit, release-state directory, or external secret-manager runtime dependency
+is installed.

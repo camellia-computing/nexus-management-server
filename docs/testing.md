@@ -13,7 +13,7 @@ server-side authorization.
 | --- | --- |
 | Rust unit and service tests | Parsing, cryptography, state transitions, permissions, idempotency, pagination, errors, and bounded behavior |
 | PostgreSQL integration | Transactions, row versions, trusted time, replica-safe rate limits, migrations, concurrency, jobs, persistence, and external-object ambiguity reconciliation |
-| Deployment contracts | Shared-host Compose scope, five database identities, private per-role metrics, denied public access to Admin data/DDL, secret permissions, and production configuration failure modes |
+| Deployment contracts | Shared-host Compose scope, five database identities, non-public per-role metrics, denied public access to Admin data/DDL, secret permissions, and production configuration failure modes |
 | Admin UI deterministic browser tests | Themes, localization, responsive/overflow states, dialogs, keyboard/focus, errors, PWA installation metadata, and interactions across fixed fixtures |
 | Final-container runtime | Image metadata, migrations, CLI mutations, public and Admin roles, PWA/static headers, hardening, readiness, worker startup, real authentication, Team operations, and logout |
 | Live Admin UI | The static UI embedded in the final image performs real authentication/step-up, account/license/code/Team/billing/bulk/support mutations, conflict recovery, audit/system checks, credential maintenance, accessibility/responsive checks, and logout |
