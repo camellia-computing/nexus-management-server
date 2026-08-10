@@ -96,7 +96,7 @@ assert_contains "$repo_root/deploy/admin-web.env.example" 'CAMELLIA_NEXUS_METRIC
 assert_contains "$repo_root/deploy/admin-web.env.example" '/secrets/admin/'
 assert_contains "$repo_root/deploy/admin-worker.env.example" 'CAMELLIA_NEXUS_METRICS_BIND=127.0.0.1:9093'
 assert_contains "$repo_root/deploy/admin-worker.env.example" '/secrets/admin/'
-if rg -n '^CAMELLIA_NEXUS_DATABASE_MIGRATE=true$' "$repo_root/deploy"; then
+if grep -REn -- '^CAMELLIA_NEXUS_DATABASE_MIGRATE=true$' "$repo_root/deploy"; then
   fail 'production systemd examples must not enable automatic migrations'
 fi
 

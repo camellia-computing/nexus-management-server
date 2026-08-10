@@ -15,21 +15,21 @@ for file in \
   test -x "$file" || fail "$(basename "$file") must be executable"
 done
 
-if rg -n 'docker (compose )?(down -v|volume rm|system prune)' \
+if grep -En -- 'docker (compose )?(down -v|volume rm|system prune)' \
   "$repo_root/scripts/camellia-nexus-deploy.sh"; then
   fail 'the deployment entrypoint contains destructive volume cleanup'
 fi
-rg -Fq 'runtime_is_ready' "$repo_root/scripts/camellia-nexus-deploy.sh" ||
+grep -Fq -- 'runtime_is_ready' "$repo_root/scripts/camellia-nexus-deploy.sh" ||
   fail 'status must return a readiness-sensitive exit status'
-rg -Fq 'adopt-existing <release-directory>' "$repo_root/scripts/camellia-nexus-deploy.sh" ||
+grep -Fq -- 'adopt-existing <release-directory>' "$repo_root/scripts/camellia-nexus-deploy.sh" ||
   fail 'legacy adoption must select the candidate release explicitly'
-rg -Fq 'database credential drift detected' "$repo_root/scripts/camellia-nexus-deploy.sh" ||
+grep -Fq -- 'database credential drift detected' "$repo_root/scripts/camellia-nexus-deploy.sh" ||
   fail 'ordinary deployment must reject an uncoordinated database password change'
-rg -Fq 'activate-prepared' "$repo_root/scripts/camellia-nexus-deploy.sh" ||
+grep -Fq -- 'activate-prepared' "$repo_root/scripts/camellia-nexus-deploy.sh" ||
   fail 'database rotation must use two-phase secret activation'
-rg -Fq 'deployment-state.json' "$repo_root/scripts/camellia-nexus-deploy.sh" ||
+grep -Fq -- 'deployment-state.json' "$repo_root/scripts/camellia-nexus-deploy.sh" ||
   fail 'successful deployment operations must record non-secret audit state'
-rg -Fq 'compose up -d --no-deps --force-recreate management-server admin-web admin-worker' \
+grep -Fq -- 'compose up -d --no-deps --force-recreate management-server admin-web admin-worker' \
   "$repo_root/scripts/camellia-nexus-deploy.sh" ||
   fail 'release reconciliation must recreate every long-running secret consumer'
 
