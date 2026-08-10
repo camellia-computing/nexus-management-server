@@ -456,24 +456,30 @@ public_password='public.runtime.rotated.0123456789ABCDE'
 printf '%s\n' "$public_password" \
   >"$temporary_directory/database-secrets/database-public-password.next"
 chmod 0444 "$temporary_directory/database-secrets/database-public-password.next"
+tar --create --directory "$temporary_directory/database-secrets" --file - \
+  database-public-password.next |
+  docker run --rm --interactive --volume "$secrets_volume:/run/secrets" --entrypoint tar \
+    "$postgres_image" -xf - -C /run/secrets
+# The smoke uses one named volume for its disposable secret set. Rename the
+# staged file inside that volume so new containers resolve the new inode, just
+# as Compose does after the host source file is atomically replaced.
+docker run --rm --volume "$secrets_volume:/run/secrets" --entrypoint sh \
+  "$postgres_image" -ec \
+  'mv -f /run/secrets/database-public-password.next /run/secrets/database-public-password'
 mv -f \
   "$temporary_directory/database-secrets/database-public-password.next" \
   "$temporary_directory/database-secrets/database-public-password"
-tar --create --directory "$temporary_directory/database-secrets" --file - \
-  database-public-password |
-  docker run --rm --interactive --volume "$secrets_volume:/run/secrets" --entrypoint tar \
-    "$postgres_image" -xf - -C /run/secrets
 
 docker run --rm "${bootstrap_common[@]}" "${runtime_security[@]}" "$image" \
   db-bootstrap reconcile
 if docker exec --env "PGPASSWORD=$initial_public_password" "$postgres" \
-  psql --host 127.0.0.1 --username "$public_role" --dbname "$database_name" \
+  psql --host postgres --username "$public_role" --dbname "$database_name" \
   --set ON_ERROR_STOP=1 --command 'SELECT 1' >/dev/null 2>&1; then
   echo 'old public database password still authenticates after reconciliation' >&2
   exit 1
 fi
 docker exec --env "PGPASSWORD=$public_password" "$postgres" \
-  psql --host 127.0.0.1 --username "$public_role" --dbname "$database_name" \
+  psql --host postgres --username "$public_role" --dbname "$database_name" \
   --set ON_ERROR_STOP=1 --command 'SELECT 1' >/dev/null
 test "$(docker inspect --format '{{.State.Status}}' "$postgres")" = running
 test "$(docker inspect --format '{{.State.StartedAt}}' "$postgres")" = "$postgres_started_at"
