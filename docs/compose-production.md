@@ -34,8 +34,8 @@ mv -T secrets/name.next secrets/name
 ```
 
 The deployment `.env` contains image digests, URLs, ports, and runtime policy only. It must not
-contain a password, private key, keyring, token, or proxy secret. An approved external secret-
-management system may produce the root-owned files, but is not a runtime dependency of Compose.
+contain a password, private key, keyring, token, or proxy secret. All secret values are supplied by
+the root-owned files in the project `secrets/` directory.
 
 ## Database identities / 数据库身份
 
@@ -131,7 +131,7 @@ file. Existing connections and processes do not reload those files automatically
 
 - Docker restarts this project's long-lived containers according to their Compose restart policy;
   no project systemd unit is required.
-- A host reboot does not require secret staging because the root-only source files are persistent.
+- Secret files persist across a host reboot and remain the Compose source after Docker restarts.
 - Roll back by changing the application image digest to a migration-compatible release and running
   the same ordered commands. Do not delete volumes or run `docker system prune`.
 - Integrate `/healthz`, `/readyz`, and the non-public metrics endpoints with the deployment
@@ -143,5 +143,4 @@ file. Existing connections and processes do not reload those files automatically
 CI and release checks must cover a fresh volume, repeated reconcile, role and ownership drift,
 secret permissions, atomic secret replacement, targeted container recreation, readiness, and a
 sentinel container from an unrelated Compose project. The test must assert that no Docker daemon
-drop-in, project systemd unit, release-state directory, or external secret-manager runtime dependency
-is installed.
+drop-in, project systemd unit, release-state directory, or deployment wrapper is installed.

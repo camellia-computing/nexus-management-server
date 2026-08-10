@@ -71,9 +71,9 @@ CAMELLIA_NEXUS_CLEANUP_BATCH_SIZE=1000
 - 正式容器构建支持 `linux/amd64`；ClamAV 依赖与发布工作流均显式采用该架构，不承诺未经验证的兼容架构
 - 生产部署遵循 [Compose 生产契约](docs/compose-production.md)，由项目目录中的标准 Docker Compose 命令管理；本项目不安装 systemd unit，也不修改 Docker daemon
 - 非秘密配置必须设置正式 Release 的不可变镜像摘要、issuer、Admin origin、客户端版本策略和宿主机端口；缺少必填策略时 Compose 直接拒绝渲染，不能静默采用示例域名或旧版本
-- 已填充的配置、Compose override 和反向代理配置是部署环境生成文件，必须排除在源代码管理、PR/Issue 和仓库文档之外；密码、PEM、keyring、代理共享密钥和 token 只存在于 root-only `secrets/` 或经批准的外部 secret 管理系统
+- 已填充的配置、Compose override 和反向代理配置是部署环境生成文件，必须排除在源代码管理、PR/Issue 和仓库文档之外；密码、PEM、keyring、代理共享密钥和 token 只存在于项目的 root-only `secrets/` 目录
 - Compose 默认将业务与指标端口只绑定宿主机回环地址；`CAMELLIA_NEXUS_LICENSE_HOST_PORT`、`CAMELLIA_NEXUS_ADMIN_HOST_PORT` 及两个 `*_METRICS_HOST_PORT` 只改变宿主机端口，不允许通过 `.env` 把监听地址扩大为公网
-- Compose 使用项目目录下 `secrets/` 的 `root:root 0700` 父目录和 `root:root 0444` 文件，按服务最小范围只读挂载，因此宿主机权限不依赖镜像内部的 UID/GID；经批准的外部 secret 管理系统可作为可选上游
+- Compose 使用项目目录下 `secrets/` 的 `root:root 0700` 父目录和 `root:root 0444` 文件，按服务最小范围只读挂载，因此宿主机权限不依赖镜像内部的 UID/GID
 - 正式应用镜像、PostgreSQL 和 ClamAV 均固定到 digest；发布流水线负责签名和制品验证，宿主机只使用已审核的 digest
 - PostgreSQL 使用固定到不可变摘要的 `postgres:18-alpine`，数据卷挂载到 `/var/lib/postgresql`
 - 服务默认只暴露到本机地址，生产入口应由反向代理提供 HTTPS
@@ -573,14 +573,14 @@ Container deployment notes:
   silently using an example domain or stale version.
 - Populated configuration, Compose overrides, and reverse-proxy configuration are deployment-
   environment artifacts. Exclude them from source control, PRs, issues, and repository documentation;
-  passwords, PEM files, keyrings, proxy shared secrets, and tokens stay in the root-only `secrets/`
-  directory or an approved external secret-management system.
+  passwords, PEM files, keyrings, proxy shared secrets, and tokens stay in the project's root-only
+  `secrets/` directory.
 - Compose binds business and metrics ports to host loopback. `CAMELLIA_NEXUS_LICENSE_HOST_PORT`,
   `CAMELLIA_NEXUS_ADMIN_HOST_PORT`, and the two `*_METRICS_HOST_PORT` settings change only host ports;
   configuration cannot widen the listener address to a public interface.
 - Compose uses a `root:root 0700` `secrets/` parent and `root:root 0444` files, and read-only projects
   only the files authorized for each service. Host ownership is never coupled to image-internal
-  UID/GID. An approved external secret-management system may be used as an optional upstream source.
+  UID/GID.
 - The application, PostgreSQL, and ClamAV references are digest-pinned. Release workflows verify
   signatures and artifacts before publishing; the host only consumes the reviewed digest.
 - PostgreSQL uses `postgres:18-alpine` pinned to an immutable digest, with data mounted at

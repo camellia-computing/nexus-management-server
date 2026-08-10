@@ -215,8 +215,7 @@ addresses, production data, credentials, or environment-specific procedures here
   locations. Single-host production Compose stores secrets below a `root:root 0700` project
   directory and projects each service's authorized `root:root 0444` file as a read-only mount.
   The root-only parent, per-service projection, and container isolation form the access boundary;
-  host ownership never depends on image-internal numeric UID/GID values. An approved external secret
-  manager may produce these root-owned files, but is not a runtime dependency of Compose.
+  host ownership never depends on image-internal numeric UID/GID values.
 - Deployment-specific domains, addresses, host ports, compatible client versions, certificate names,
   and backup identifiers belong only in deployment configuration excluded from source control. Keep
   committed examples on reserved domains and generic loopback/default ports; never copy production
