@@ -698,13 +698,19 @@ USAGE / 用法:
   camellia-nexus-management-server admin-web
   camellia-nexus-management-server admin-worker
   camellia-nexus-management-server admin <command> [options]
-  camellia-nexus-management-server help [serve|migrate|healthcheck|admin-web|admin-worker|admin [group [operation ...]]]
+  camellia-nexus-management-server help [serve|migrate|validate-deployment-secrets|db-bootstrap|healthcheck|admin-web|admin-worker|admin [group [operation ...]]]
 
 COMMANDS / 命令:
   serve    Run the HTTP licensing service (default).
            运行 HTTP 授权服务（默认命令）。
   migrate  Apply pending database migrations and verify readiness, then exit.
            应用待执行的数据库迁移、验证就绪状态后退出。
+  validate-deployment-secrets
+           Validate every staged production secret without network access.
+           在无网络访问的情况下验证全部已暂存生产 secret。
+  db-bootstrap
+           Reconcile or check database login roles before migration.
+           在迁移前校正或检查数据库登录角色。
   healthcheck Probe a local /healthz or /readyz endpoint, then exit.
               探测本机 /healthz 或 /readyz 端点后退出。
   admin-web Run the isolated administration control plane.
@@ -725,6 +731,8 @@ OPTIONS / 选项:
 HELP EXAMPLES / 帮助示例:
   camellia-nexus-management-server serve --help
   camellia-nexus-management-server migrate --help
+  camellia-nexus-management-server validate-deployment-secrets --help
+  camellia-nexus-management-server db-bootstrap --help
   camellia-nexus-management-server healthcheck --help
   camellia-nexus-management-server admin-web --help
   camellia-nexus-management-server admin-worker --help
@@ -814,6 +822,33 @@ RELATED ENVIRONMENT / 相关环境:
 
 See docs/systemd-deployment.md for role provisioning, deployment order, and recovery.
 角色创建、部署顺序及恢复规则见 docs/systemd-deployment.md。"#),
+        "validate-deployment-secrets" => Ok(
+            r#"Camellia Nexus Management Server — validate-deployment-secrets
+Validate staged production secrets / 验证已暂存的生产 secret
+
+USAGE / 用法:
+  camellia-nexus-management-server validate-deployment-secrets
+
+The command performs no network access and prints only logical secret names and
+validation status. It rejects missing, malformed, oversized, or unreadable files.
+本命令不访问网络，只输出 secret 逻辑名称及验证状态；缺失、畸形、超限或不可读文件均会被拒绝。"#,
+        ),
+        "db-bootstrap" => Ok(r#"Camellia Nexus Management Server — db-bootstrap
+Reconcile the production database identity contract / 校正生产数据库身份契约
+
+USAGE / 用法:
+  camellia-nexus-management-server db-bootstrap reconcile
+  camellia-nexus-management-server db-bootstrap check
+
+reconcile creates or corrects the migration and runtime logins, passwords,
+memberships, and ownership. check is read-only. Bootstrap credentials are
+installation credentials and are not rotated by this command.
+reconcile 创建或校正迁移及运行登录、密码、成员关系与所有权；check 只读检查；
+bootstrap 凭据属于安装级凭据，本命令不会轮换。
+
+Passwords are accepted only through *_PASSWORD_FILE variables and never through
+command arguments or password-bearing URLs.
+密码只允许通过 *_PASSWORD_FILE 提供，不得出现在命令参数或 URL 中。"#),
         "healthcheck" => Ok(r#"Camellia Nexus Management Server — healthcheck
 Probe one local process endpoint / 探测一个本机进程端点
 

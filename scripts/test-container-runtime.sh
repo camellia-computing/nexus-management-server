@@ -68,41 +68,32 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 docker image inspect "$image" >/dev/null
-application_identity="$(docker image inspect --format '{{.Config.User}}' "$image")"
-if [[ ! "$application_identity" =~ ^([0-9]+):([0-9]+)$ ]]; then
-  echo "Runtime image must declare a numeric UID:GID" >&2
-  exit 1
-fi
-application_uid="${BASH_REMATCH[1]}"
-application_gid="${BASH_REMATCH[2]}"
-postgres_runtime_gid="$(docker run --rm --entrypoint sh "$postgres_image" -ec 'id -g postgres')"
-[[ "$postgres_runtime_gid" =~ ^[0-9]+$ ]] || {
-  echo "Pinned PostgreSQL image did not expose a numeric postgres GID" >&2
-  exit 1
-}
 docker network create "$network" >/dev/null
 database_name=nexus
+bootstrap_role=nexus_bootstrap
 migrate_role=nexus_migrate
 public_role=nexus_public
 admin_web_role=nexus_admin_web
 admin_worker_role=nexus_admin_worker
+bootstrap_password='bootstrap.runtime.smoke.0123456789A'
+initial_bootstrap_password=$bootstrap_password
 migrate_password='migrate.runtime.smoke.0123456789ABC'
 public_password='public.runtime.smoke.0123456789ABCD'
+initial_public_password=$public_password
 admin_web_password='admin.web.runtime.smoke.0123456789'
 admin_worker_password='admin.worker.runtime.smoke.0123456'
+bootstrap_database_url="postgres://$bootstrap_role@postgres:5432/$database_name"
 migrate_database_url="postgres://$migrate_role@postgres:5432/$database_name"
 public_database_url="postgres://$public_role@postgres:5432/$database_name"
 admin_web_database_url="postgres://$admin_web_role@postgres:5432/$database_name"
 admin_worker_database_url="postgres://$admin_worker_role@postgres:5432/$database_name"
 mkdir -p "$temporary_directory/database-secrets"
+printf '%s\n' "$bootstrap_password" >"$temporary_directory/database-secrets/database-bootstrap-password"
 printf '%s\n' "$migrate_password" >"$temporary_directory/database-secrets/database-migrate-password"
 printf '%s\n' "$public_password" >"$temporary_directory/database-secrets/database-public-password"
 printf '%s\n' "$admin_web_password" >"$temporary_directory/database-secrets/database-admin-web-password"
 printf '%s\n' "$admin_worker_password" >"$temporary_directory/database-secrets/database-admin-worker-password"
-cp "$repository_root/deploy/postgres/init-runtime-roles.sh" \
-  "$temporary_directory/database-secrets/10-runtime-roles.sh"
-chmod 0600 "$temporary_directory/database-secrets"/database-*-password
-chmod 0555 "$temporary_directory/database-secrets/10-runtime-roles.sh"
+chmod 0444 "$temporary_directory/database-secrets"/*
 if docker volume inspect "$secrets_volume" >/dev/null 2>&1; then
   echo "Refusing to reuse an existing runtime secrets volume: $secrets_volume" >&2
   exit 1
@@ -110,30 +101,15 @@ fi
 docker volume create "$secrets_volume" >/dev/null
 secrets_volume_created=1
 tar --create --directory "$temporary_directory/database-secrets" --file - \
-  database-migrate-password database-public-password database-admin-web-password \
-  database-admin-worker-password 10-runtime-roles.sh |
+  database-bootstrap-password database-migrate-password database-public-password \
+  database-admin-web-password database-admin-worker-password |
   docker run --rm --interactive --volume "$secrets_volume:/run/secrets" --entrypoint tar \
     "$postgres_image" -xf - -C /run/secrets
-docker run --rm --volume "$secrets_volume:/run/secrets" --entrypoint sh \
-  --env APPLICATION_UID="$application_uid" --env POSTGRES_RUNTIME_GID="$postgres_runtime_gid" \
-  "$postgres_image" -ec '
-  chown "$APPLICATION_UID:$POSTGRES_RUNTIME_GID" /run/secrets/database-*-password
-  chmod 0440 /run/secrets/database-*-password
-  chown root:root /run/secrets/10-runtime-roles.sh
-  chmod 0555 /run/secrets/10-runtime-roles.sh
-'
 docker run --detach --name "$postgres" --network "$network" --network-alias postgres \
   --env "POSTGRES_DB=$database_name" \
-  --env "POSTGRES_USER=$migrate_role" \
-  --env POSTGRES_PASSWORD_FILE=/run/secrets/database-migrate-password \
-  --env CAMELLIA_NEXUS_DATABASE_PUBLIC_ROLE="$public_role" \
-  --env CAMELLIA_NEXUS_DATABASE_PUBLIC_PASSWORD_FILE=/run/secrets/database-public-password \
-  --env CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_ROLE="$admin_web_role" \
-  --env CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_PASSWORD_FILE=/run/secrets/database-admin-web-password \
-  --env CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_ROLE="$admin_worker_role" \
-  --env CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_PASSWORD_FILE=/run/secrets/database-admin-worker-password \
+  --env "POSTGRES_USER=$bootstrap_role" \
+  --env POSTGRES_PASSWORD_FILE=/run/secrets/database-bootstrap-password \
   --volume "$secrets_volume:/run/secrets:ro" \
-  --volume "$secrets_volume:/docker-entrypoint-initdb.d:ro" \
   "$postgres_image" \
   >/dev/null
 
@@ -142,27 +118,31 @@ for _ in {1..30}; do
   # replaces PID 1 with the final database process. Do not accept that
   # transitional ready state: it is immediately followed by a clean shutdown.
   if docker exec "$postgres" sh -ec \
-      "test \"\$(cat /proc/1/comm)\" = postgres && pg_isready --username $migrate_role --dbname $database_name" \
+      "test \"\$(cat /proc/1/comm)\" = postgres && pg_isready --username $bootstrap_role --dbname $database_name" \
       >/dev/null 2>&1; then
     break
   fi
   sleep 1
 done
 docker exec "$postgres" sh -ec \
-  "test \"\$(cat /proc/1/comm)\" = postgres && pg_isready --username $migrate_role --dbname $database_name" \
+  "test \"\$(cat /proc/1/comm)\" = postgres && pg_isready --username $bootstrap_role --dbname $database_name" \
   >/dev/null
 echo "==> Start the pinned production evidence scanner"
 docker run --detach --name "$clamav" --network "$network" --network-alias clamav \
   --platform linux/amd64 \
   "$clamav_image" \
   >/dev/null
-for _ in {1..90}; do
+for _ in {1..300}; do
   if docker exec "$clamav" clamdscan --ping 1 >/dev/null 2>&1; then
     break
   fi
   sleep 1
 done
-docker exec "$clamav" clamdscan --ping 1 >/dev/null
+if ! docker exec "$clamav" clamdscan --ping 1 >/dev/null; then
+  echo 'ClamAV failed to become ready during the runtime test' >&2
+  docker logs "$clamav" 2>&1 | tail -n 120 >&2
+  exit 1
+fi
 
 "$repository_root/scripts/generate-entitlement-key.sh" \
   "$temporary_directory/entitlement-private.pem" \
@@ -170,24 +150,30 @@ docker exec "$clamav" clamdscan --ping 1 >/dev/null
 "$repository_root/scripts/generate-keyring.sh" admin "$temporary_directory/admin-keyring.json" >/dev/null
 "$repository_root/scripts/generate-keyring.sh" workspace "$temporary_directory/workspace-keyring.json" >/dev/null
 "$repository_root/scripts/generate-keyring.sh" webhook "$temporary_directory/webhook-keyring.json" >/dev/null
-chmod 0600 "$temporary_directory/entitlement-private.pem" "$temporary_directory"/*-keyring.json
-tar --create --directory "$temporary_directory" --file - \
+chmod 0444 "$temporary_directory/entitlement-private.pem" "$temporary_directory"/*-keyring.json
+tar --create --mode='a=r' --directory "$temporary_directory" --file - \
   entitlement-private.pem admin-keyring.json workspace-keyring.json webhook-keyring.json |
   docker run --rm --interactive --volume "$secrets_volume:/run/secrets" --entrypoint tar \
     "$postgres_image" -xf - -C /run/secrets
-docker run --rm --volume "$secrets_volume:/run/secrets" --entrypoint sh \
-  --env APPLICATION_UID="$application_uid" --env APPLICATION_GID="$application_gid" \
-  "$postgres_image" -ec '
-  chown "$APPLICATION_UID:$APPLICATION_GID" /run/secrets/entitlement-private.pem /run/secrets/*-keyring.json
-  chmod 0400 /run/secrets/entitlement-private.pem /run/secrets/*-keyring.json
-'
 docker run --rm --volume "$secrets_volume:/run/secrets:ro" --entrypoint sh "$image" -ec '
   for secret in entitlement-private.pem admin-keyring.json workspace-keyring.json webhook-keyring.json \
-      database-migrate-password database-public-password database-admin-web-password \
+      database-bootstrap-password database-migrate-password database-public-password database-admin-web-password \
       database-admin-worker-password; do
     test -f "/run/secrets/$secret" && test -r "/run/secrets/$secret"
   done
 '
+
+echo "==> Verify UID-independent least-scope file projections"
+for numeric_user in 70:70 10001:10001 23456:23456; do
+  docker run --rm --network none --read-only --user "$numeric_user" \
+    --mount "type=bind,source=$temporary_directory/database-secrets/database-public-password,target=/run/secrets/authorized,readonly" \
+    --entrypoint sh "$image" -ec '
+      test -r /run/secrets/authorized
+      test "$(wc -c </run/secrets/authorized)" -ge 32
+      test ! -e /run/secrets/database-bootstrap-password
+      test ! -e /run/secrets/database-admin-web-password
+    '
+done
 
 common=(
   --network "$network"
@@ -281,6 +267,52 @@ admin_post() {
     return 1
   fi
 }
+
+bootstrap_common=(
+  --network "$network"
+  --env CAMELLIA_NEXUS_LICENSE_ENV=production
+  --env "DATABASE_URL=$bootstrap_database_url"
+  --env DATABASE_PASSWORD_FILE=/run/secrets/database-bootstrap-password
+  --env "CAMELLIA_NEXUS_DATABASE_BOOTSTRAP_ROLE=$bootstrap_role"
+  --env "CAMELLIA_NEXUS_DATABASE_MIGRATE_ROLE=$migrate_role"
+  --env CAMELLIA_NEXUS_DATABASE_MIGRATE_PASSWORD_FILE=/run/secrets/database-migrate-password
+  --env "CAMELLIA_NEXUS_DATABASE_PUBLIC_ROLE=$public_role"
+  --env CAMELLIA_NEXUS_DATABASE_PUBLIC_PASSWORD_FILE=/run/secrets/database-public-password
+  --env "CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_ROLE=$admin_web_role"
+  --env CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_PASSWORD_FILE=/run/secrets/database-admin-web-password
+  --env "CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_ROLE=$admin_worker_role"
+  --env CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_PASSWORD_FILE=/run/secrets/database-admin-worker-password
+  --volume "$secrets_volume:/run/secrets:ro"
+)
+
+echo "==> Reconcile database identities independently of initdb"
+docker run --rm "${bootstrap_common[@]}" "${runtime_security[@]}" "$image" \
+  db-bootstrap reconcile
+docker run --rm "${bootstrap_common[@]}" "${runtime_security[@]}" "$image" \
+  db-bootstrap reconcile
+docker exec "$postgres" psql --username "$bootstrap_role" --dbname "$database_name" \
+  --set ON_ERROR_STOP=1 \
+  --command "ALTER ROLE $public_role CREATEROLE CONNECTION LIMIT 0 VALID UNTIL '2000-01-01T00:00:00Z'; ALTER ROLE $public_role SET search_path = pg_catalog; ALTER ROLE $bootstrap_role SET application_name = 'drifted-bootstrap'" \
+  >/dev/null
+docker exec "$postgres" psql --username "$bootstrap_role" --dbname "$database_name" \
+  --set ON_ERROR_STOP=1 \
+  --command "GRANT pg_read_all_data TO $public_role; GRANT $public_role, pg_monitor TO $bootstrap_role" \
+  >/dev/null
+docker run --rm "${bootstrap_common[@]}" "${runtime_security[@]}" "$image" \
+  db-bootstrap reconcile
+docker run --rm "${bootstrap_common[@]}" "${runtime_security[@]}" "$image" \
+  db-bootstrap check
+docker exec "$postgres" psql --username "$bootstrap_role" --dbname "$database_name" \
+  --tuples-only --no-align --set ON_ERROR_STOP=1 \
+  --command "SELECT rolsuper::int || ':' || rolcreatedb::int || ':' || rolcreaterole::int FROM pg_roles WHERE rolname = '$migrate_role'" |
+  grep -Fxq '0:0:0'
+docker exec "$postgres" psql --username "$bootstrap_role" --dbname "$database_name" \
+  --tuples-only --no-align --set ON_ERROR_STOP=1 \
+  --command "SELECT pg_get_userbyid(datdba) || ':' || pg_get_userbyid((SELECT nspowner FROM pg_namespace WHERE nspname = 'public')) FROM pg_database WHERE datname = current_database()" |
+  grep -Fxq "$migrate_role:$migrate_role"
+
+docker run --rm "${bootstrap_common[@]}" "${runtime_security[@]}" "$image" \
+  db-bootstrap check
 
 docker run --rm "${common[@]}" "${runtime_security[@]}" \
   --env "DATABASE_URL=$migrate_database_url" \
@@ -408,6 +440,49 @@ docker run --detach --name "$public" "${common[@]}" "${runtime_security[@]}" \
   --env CAMELLIA_NEXUS_LICENSE_BIND=0.0.0.0:8088 \
   "$image" serve >/dev/null
 
+for _ in {1..30}; do
+  if docker exec "$public" camellia-nexus-management-server healthcheck \
+    http://127.0.0.1:8088/readyz >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+docker exec "$public" camellia-nexus-management-server healthcheck \
+  http://127.0.0.1:8088/readyz >/dev/null
+
+echo "==> Rotate a runtime database password without rebuilding PostgreSQL"
+postgres_started_at=$(docker inspect --format '{{.State.StartedAt}}' "$postgres")
+public_password='public.runtime.rotated.0123456789ABCDE'
+printf '%s\n' "$public_password" \
+  >"$temporary_directory/database-secrets/database-public-password"
+chmod 0444 "$temporary_directory/database-secrets/database-public-password"
+tar --create --directory "$temporary_directory/database-secrets" --file - \
+  database-public-password |
+  docker run --rm --interactive --volume "$secrets_volume:/run/secrets" --entrypoint tar \
+    "$postgres_image" -xf - -C /run/secrets
+
+docker run --rm "${bootstrap_common[@]}" "${runtime_security[@]}" "$image" \
+  db-bootstrap reconcile
+if docker exec --env "PGPASSWORD=$initial_public_password" "$postgres" \
+  psql --host 127.0.0.1 --username "$public_role" --dbname "$database_name" \
+  --set ON_ERROR_STOP=1 --command 'SELECT 1' >/dev/null 2>&1; then
+  echo 'old public database password still authenticates after reconciliation' >&2
+  exit 1
+fi
+docker exec --env "PGPASSWORD=$public_password" "$postgres" \
+  psql --host 127.0.0.1 --username "$public_role" --dbname "$database_name" \
+  --set ON_ERROR_STOP=1 --command 'SELECT 1' >/dev/null
+test "$(docker inspect --format '{{.State.Status}}' "$postgres")" = running
+test "$(docker inspect --format '{{.State.StartedAt}}' "$postgres")" = "$postgres_started_at"
+
+# Runtime services read their password file when the process starts. Recreate
+# only the affected service so it opens its new pool with the rotated password.
+docker rm --force "$public" >/dev/null
+docker run --detach --name "$public" "${common[@]}" "${runtime_security[@]}" \
+  --env "DATABASE_URL=$public_database_url" \
+  --env DATABASE_PASSWORD_FILE=/run/secrets/database-public-password \
+  --env CAMELLIA_NEXUS_LICENSE_BIND=0.0.0.0:8088 \
+  "$image" serve >/dev/null
 for _ in {1..30}; do
   if docker exec "$public" camellia-nexus-management-server healthcheck \
     http://127.0.0.1:8088/readyz >/dev/null 2>&1; then
@@ -813,7 +888,7 @@ echo "==> Verify database passwords are absent from container and application pr
 for container in "$postgres" "$public" "$admin" "$worker"; do
   container_metadata="$(docker inspect --format \
     '{{json .Config.Env}} {{json .Config.Entrypoint}} {{json .Config.Cmd}}' "$container")"
-  for secret in "$migrate_password" "$public_password" "$admin_web_password" "$admin_worker_password"; do
+  for secret in "$initial_bootstrap_password" "$bootstrap_password" "$migrate_password" "$public_password" "$admin_web_password" "$admin_worker_password"; do
     if grep -Fq -- "$secret" <<<"$container_metadata"; then
       echo "database password leaked into Docker metadata for $container" >&2
       exit 1
@@ -827,7 +902,7 @@ for container in "$public" "$admin" "$worker"; do
         tr "\000" "\n" <"$file"
       done
     ')"
-  for secret in "$migrate_password" "$public_password" "$admin_web_password" "$admin_worker_password"; do
+  for secret in "$initial_bootstrap_password" "$bootstrap_password" "$migrate_password" "$public_password" "$admin_web_password" "$admin_worker_password"; do
     if grep -Fq -- "$secret" <<<"$process_metadata"; then
       echo "database password leaked into application process metadata for $container" >&2
       exit 1

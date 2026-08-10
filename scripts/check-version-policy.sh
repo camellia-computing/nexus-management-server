@@ -282,26 +282,45 @@ runtime_clamav_version="$(sed -nE 's|^clamav/clamav:([0-9]+\.[0-9]+\.[0-9]+)@sha
   fail 'Compose and the runtime test must use the same exact ClamAV patch'
 grep -Fq -- '- postgres-18-data:/var/lib/postgresql' docker-compose.yml ||
   fail 'PostgreSQL 18 Compose data must be mounted at /var/lib/postgresql'
-grep -Fq 'source: ./deploy/postgres/init-runtime-roles.sh' docker-compose.yml &&
-  grep -Fq 'target: /docker-entrypoint-initdb.d/10-runtime-roles.sh' docker-compose.yml &&
-  grep -Fq 'create_host_path: false' docker-compose.yml ||
-  fail 'Compose must reject a missing PostgreSQL runtime-role initializer before first start'
-for role in MIGRATE PUBLIC ADMIN_WEB ADMIN_WORKER; do
+if grep -Fq '/docker-entrypoint-initdb.d' docker-compose.yml; then
+  fail 'production Compose must not bind host initialization scripts into PostgreSQL'
+fi
+grep -Fq 'command: ["db-bootstrap", "reconcile"]' docker-compose.yml ||
+  fail 'Compose must reconcile database identities independently of first initdb'
+grep -Fq 'condition: service_completed_successfully' docker-compose.yml ||
+  fail 'Compose must gate later services on successful one-shot roles'
+grep -Fq 'POSTGRES_USER: ${CAMELLIA_NEXUS_DATABASE_BOOTSTRAP_ROLE:-nexus_bootstrap}' \
+  docker-compose.yml ||
+  fail 'PostgreSQL must initialize with the dedicated bootstrap identity'
+for role in BOOTSTRAP MIGRATE PUBLIC ADMIN_WEB ADMIN_WORKER; do
   grep -Fq "CAMELLIA_NEXUS_DATABASE_${role}_PASSWORD_FILE" docker-compose.yml ||
     fail "Compose is missing the ${role} database credential boundary"
 done
-for secret in database_migrate_password database_public_password database_admin_web_password database_admin_worker_password; do
+for secret in database_bootstrap_password database_migrate_password database_public_password database_admin_web_password database_admin_worker_password; do
   grep -Fq "$secret" docker-compose.yml ||
     fail "Compose is missing the ${secret} Docker secret"
 done
-grep -Fq 'chown "$APPLICATION_UID:$POSTGRES_RUNTIME_GID" /run/secrets/database-*-password' scripts/test-container-runtime.sh &&
-  grep -Fq 'chmod 0440 /run/secrets/database-*-password' scripts/test-container-runtime.sh ||
-  fail 'the runtime smoke must grant only the resolved application/PostgreSQL identities database-secret access'
-grep -Fq 'chown "$APPLICATION_UID:$APPLICATION_GID" /run/secrets/entitlement-private.pem' scripts/test-container-runtime.sh &&
-  grep -Fq 'chmod 0400 /run/secrets/entitlement-private.pem' scripts/test-container-runtime.sh ||
-  fail 'the runtime smoke must grant only the resolved application identity application-secret access'
-if grep -Eq 'CAMELLIA_NEXUS_DATABASE_(MIGRATE|PUBLIC|ADMIN_WEB|ADMIN_WORKER)_PASSWORD:' docker-compose.yml; then
+for source in \
+  database-bootstrap-password \
+  database-migrate-password \
+  database-public-password \
+  database-admin-web-password \
+  database-admin-worker-password \
+  entitlement-es256-private.pem \
+  workspace-keyring.json \
+  webhook-keyring.json \
+  admin-keyring.json \
+  admin-proxy-secret; do
+  grep -Fq "./secrets/$source" docker-compose.yml ||
+    fail "Compose secret source must default below the project root: $source"
+done
+if grep -Eq 'CAMELLIA_NEXUS_DATABASE_(BOOTSTRAP|MIGRATE|PUBLIC|ADMIN_WEB|ADMIN_WORKER)_PASSWORD:' docker-compose.yml; then
   fail 'Compose must not expose database passwords as environment values'
+fi
+grep -Fq 'network_mode: none' docker-compose.yml ||
+  fail 'the deployment secret validator must not receive a network namespace'
+if [[ -d deploy/systemd/docker ]]; then
+  fail 'Compose deployment must not install project Docker systemd units or daemon drop-ins'
 fi
 if grep -q '^DATABASE_URL=' deploy/management-common.env.example; then
   fail 'the common systemd environment must not share one database credential across roles'

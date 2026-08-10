@@ -13,6 +13,7 @@ pub mod config;
 pub mod contracts;
 pub mod crypto;
 pub mod database_roles;
+pub mod deployment;
 pub mod domain;
 pub mod error;
 mod es256_provider;
