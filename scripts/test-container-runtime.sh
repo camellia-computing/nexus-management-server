@@ -454,8 +454,11 @@ echo "==> Rotate a runtime database password without rebuilding PostgreSQL"
 postgres_started_at=$(docker inspect --format '{{.State.StartedAt}}' "$postgres")
 public_password='public.runtime.rotated.0123456789ABCDE'
 printf '%s\n' "$public_password" \
-  >"$temporary_directory/database-secrets/database-public-password"
-chmod 0444 "$temporary_directory/database-secrets/database-public-password"
+  >"$temporary_directory/database-secrets/database-public-password.next"
+chmod 0444 "$temporary_directory/database-secrets/database-public-password.next"
+mv -f \
+  "$temporary_directory/database-secrets/database-public-password.next" \
+  "$temporary_directory/database-secrets/database-public-password"
 tar --create --directory "$temporary_directory/database-secrets" --file - \
   database-public-password |
   docker run --rm --interactive --volume "$secrets_volume:/run/secrets" --entrypoint tar \
