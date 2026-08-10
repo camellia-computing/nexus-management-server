@@ -3,6 +3,13 @@
 All notable changes to the Camellia Nexus Management Server will be recorded
 here from the first commercial release onward.
 
+## [1.1.0] - 2026-08-10
+
+### Added
+
+- standardize shared-host Compose bootstrap (#25)
+
+
 ## [1.0.5] - 2026-08-09
 
 ### Fixed
