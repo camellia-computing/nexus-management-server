@@ -3,7 +3,7 @@
 This file is the durable starting point for review and implementation in the management-server
 repository. Keep it synchronized with the current service, administration UI, database schema,
 deployment, and desktop contract. Do not record transient Actions runs, release digests, deployment
-addresses, customer data, credentials, or machine-local procedures here.
+addresses, production data, credentials, or environment-specific procedures here.
 
 ## Product and authority model
 
@@ -212,16 +212,12 @@ addresses, customer data, credentials, or machine-local procedures here.
 - Production secrets come from restricted files or the deployment secret system, not ordinary
   environment values, JSON state, command lines, logs, images, tickets, or frontend stores.
 - Secret generators use `umask 077`, publish atomically, refuse overwrite, and write only to ignored
-  locations. Secret access is an outcome-based boundary, not a fixed host ownership recipe: each
-  intended container identity must be able to read only its required files, and unrelated host or
-  container identities must not. Resolve effective identities from immutable image metadata and the
-  runtime security context; do not present image-specific numeric identities as portable host
-  ownership requirements. A local bind may use restricted owner/group permissions, an ACL, or
-  deployment-platform secret mapping as long as target-identity read probes and fresh-volume
-  bootstrap pass. Keep the enclosing deployment directory restricted and never make a secret
-  globally readable.
+  locations. Single-host production Compose stores secrets below a `root:root 0700` project
+  directory and projects each service's authorized `root:root 0444` file as a read-only mount.
+  The root-only parent, per-service projection, and container isolation form the access boundary;
+  host ownership never depends on image-internal numeric UID/GID values.
 - Deployment-specific domains, addresses, host ports, compatible client versions, certificate names,
-  and backup identifiers belong only in ignored local configuration or the deployment platform. Keep
+  and backup identifiers belong only in deployment configuration excluded from source control. Keep
   committed examples on reserved domains and generic loopback/default ports; never copy production
   infrastructure identifiers into source, PR descriptions, fixtures, or durable repository docs.
 - Diagnostics must not print populated `.env` files, rendered Compose environments, full
@@ -286,8 +282,8 @@ addresses, customer data, credentials, or machine-local procedures here.
   Runtime smoke uses isolated PostgreSQL and exercises migrations, every runtime role, administrator
   enrollment/login/step-up/logout, account/Team-license/code/invitation flows, delivery replay, and
   container hardening against the final image.
-- Non-container deployment changes run `scripts/test-systemd-deployment.sh`; the migrate, public,
-  Admin Web, and worker units must remain explicit, ordered, independently restartable, and hardened.
+- Native systemd deployment changes run `scripts/test-systemd-deployment.sh`; the Compose deployment
+  is project-scoped and must not install a Docker daemon dependency or affect unrelated projects.
 - Candidate-image validation runs the live Admin UI against the real final-image API and exports a
   digest-verified, credential-free server/PostgreSQL rootfs bundle for native Windows E2E. Disposable
   Compose providers may emit activation codes only through their protected descriptor stdout and

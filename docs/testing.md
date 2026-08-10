@@ -13,7 +13,7 @@ server-side authorization.
 | --- | --- |
 | Rust unit and service tests | Parsing, cryptography, state transitions, permissions, idempotency, pagination, errors, and bounded behavior |
 | PostgreSQL integration | Transactions, row versions, trusted time, replica-safe rate limits, migrations, concurrency, jobs, persistence, and external-object ambiguity reconciliation |
-| Deployment contracts | Four distinct OS and database identities, systemd ordering/hardening, private per-role metrics, denied public access to Admin data/DDL, and production configuration failure modes |
+| Deployment contracts | Shared-host Compose scope, five database identities, non-public per-role metrics, denied public access to Admin data/DDL, secret permissions, and production configuration failure modes |
 | Admin UI deterministic browser tests | Themes, localization, responsive/overflow states, dialogs, keyboard/focus, errors, PWA installation metadata, and interactions across fixed fixtures |
 | Final-container runtime | Image metadata, migrations, CLI mutations, public and Admin roles, PWA/static headers, hardening, readiness, worker startup, real authentication, Team operations, and logout |
 | Live Admin UI | The static UI embedded in the final image performs real authentication/step-up, account/license/code/Team/billing/bulk/support mutations, conflict recovery, audit/system checks, credential maintenance, accessibility/responsive checks, and logout |
@@ -28,6 +28,7 @@ cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
 bash scripts/test-systemd-deployment.sh
+bash scripts/test-compose-production-deployment.sh
 node scripts/check-cross-repo-contract.mjs
 node scripts/test-cross-repo-contract.mjs
 pnpm --dir admin-ui install --frozen-lockfile
@@ -50,8 +51,10 @@ control is intentionally relocated. Normal repository-local execution derives
 the root automatically; formal publication passes and validates the exact tag
 checkout explicitly.
 
-The runtime test creates an isolated PostgreSQL database with a schema owner plus three
-least-privilege runtime logins, enrollment factors and sessions, accounts, Team licenses, one-time
+The runtime test creates an isolated PostgreSQL database with a dedicated bootstrap identity, a
+non-superuser schema owner, and three least-privilege runtime logins. It verifies idempotent role
+reconciliation, drift repair, UID-independent secret projection,
+enrollment factors and sessions, accounts, Team licenses, one-time
 deliveries, billing fixtures, a synthetic PDF, a pinned ClamAV scanner, worker, and hardened runtime
 containers. It proves the public login cannot read Admin identities or create schema objects and the
 Worker cannot read password credentials. A disposable pre-expired browser session proves the real step-up

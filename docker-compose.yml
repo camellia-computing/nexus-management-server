@@ -26,13 +26,74 @@ x-service: &service
   restart: unless-stopped
 
 services:
+  secret-validator:
+    <<: *container-hardening
+    image: ${CAMELLIA_NEXUS_LICENSE_IMAGE:?set CAMELLIA_NEXUS_LICENSE_IMAGE to an immutable image digest}
+    command: ["validate-deployment-secrets"]
+    network_mode: none
+    environment:
+      <<: *common-environment
+      CAMELLIA_NEXUS_DATABASE_BOOTSTRAP_PASSWORD_FILE: /run/secrets/database_bootstrap_password
+      CAMELLIA_NEXUS_DATABASE_MIGRATE_PASSWORD_FILE: /run/secrets/database_migrate_password
+      CAMELLIA_NEXUS_DATABASE_PUBLIC_PASSWORD_FILE: /run/secrets/database_public_password
+      CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_PASSWORD_FILE: /run/secrets/database_admin_web_password
+      CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_PASSWORD_FILE: /run/secrets/database_admin_worker_password
+      CAMELLIA_NEXUS_LICENSE_KEY_ID: ${CAMELLIA_NEXUS_LICENSE_KEY_ID:?set the active entitlement key id}
+      CAMELLIA_NEXUS_LICENSE_PRIVATE_KEY_PEM_PATH: /run/secrets/entitlement_private_key
+      CAMELLIA_NEXUS_WORKSPACE_KEYRING_PATH: /run/secrets/workspace_keyring
+      CAMELLIA_NEXUS_WEBHOOK_KEYRING_PATH: /run/secrets/webhook_keyring
+      CAMELLIA_NEXUS_ADMIN_KEYRING_PATH: /run/secrets/admin_keyring
+      CAMELLIA_NEXUS_ADMIN_FORWARDED_FOR_SECRET_PATH: /run/secrets/admin_proxy_secret
+    secrets:
+      - database_bootstrap_password
+      - database_migrate_password
+      - database_public_password
+      - database_admin_web_password
+      - database_admin_worker_password
+      - entitlement_private_key
+      - workspace_keyring
+      - webhook_keyring
+      - admin_keyring
+      - admin_proxy_secret
+    restart: "no"
+
+  db-bootstrap:
+    <<: *container-hardening
+    image: ${CAMELLIA_NEXUS_LICENSE_IMAGE:?set CAMELLIA_NEXUS_LICENSE_IMAGE to an immutable image digest}
+    command: ["db-bootstrap", "reconcile"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *common-environment
+      DATABASE_URL: postgres://${CAMELLIA_NEXUS_DATABASE_BOOTSTRAP_ROLE:-nexus_bootstrap}@postgres:5432/${CAMELLIA_NEXUS_DATABASE_NAME:-nexus}
+      DATABASE_PASSWORD_FILE: /run/secrets/database_bootstrap_password
+      CAMELLIA_NEXUS_DATABASE_BOOTSTRAP_ROLE: ${CAMELLIA_NEXUS_DATABASE_BOOTSTRAP_ROLE:-nexus_bootstrap}
+      CAMELLIA_NEXUS_DATABASE_MIGRATE_ROLE: ${CAMELLIA_NEXUS_DATABASE_MIGRATE_ROLE:-nexus_migrate}
+      CAMELLIA_NEXUS_DATABASE_MIGRATE_PASSWORD_FILE: /run/secrets/database_migrate_password
+      CAMELLIA_NEXUS_DATABASE_PUBLIC_ROLE: ${CAMELLIA_NEXUS_DATABASE_PUBLIC_ROLE:-nexus_public}
+      CAMELLIA_NEXUS_DATABASE_PUBLIC_PASSWORD_FILE: /run/secrets/database_public_password
+      CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_ROLE: ${CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_ROLE:-nexus_admin_web}
+      CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_PASSWORD_FILE: /run/secrets/database_admin_web_password
+      CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_ROLE: ${CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_ROLE:-nexus_admin_worker}
+      CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_PASSWORD_FILE: /run/secrets/database_admin_worker_password
+    secrets:
+      - database_bootstrap_password
+      - database_migrate_password
+      - database_public_password
+      - database_admin_web_password
+      - database_admin_worker_password
+    networks:
+      - database
+    restart: "no"
+
   migrate:
     <<: *container-hardening
     image: ${CAMELLIA_NEXUS_LICENSE_IMAGE:?set CAMELLIA_NEXUS_LICENSE_IMAGE to an immutable image digest}
     command: ["migrate"]
     depends_on:
-      postgres:
-        condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
     environment:
       <<: *common-environment
       DATABASE_URL: postgres://${CAMELLIA_NEXUS_DATABASE_MIGRATE_ROLE:-nexus_migrate}@postgres:5432/${CAMELLIA_NEXUS_DATABASE_NAME:-nexus}
@@ -42,6 +103,8 @@ services:
       CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_ROLE: ${CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_ROLE:-nexus_admin_worker}
     secrets:
       - database_migrate_password
+    networks:
+      - database
     restart: "no"
 
   management-server:
@@ -54,18 +117,18 @@ services:
       DATABASE_PASSWORD_FILE: /run/secrets/database_public_password
       CAMELLIA_NEXUS_LICENSE_BIND: 0.0.0.0:8088
       CAMELLIA_NEXUS_LICENSE_STORAGE: postgres
-      CAMELLIA_NEXUS_LICENSE_ISSUER: ${CAMELLIA_NEXUS_LICENSE_ISSUER:?set the production HTTPS issuer}
+      CAMELLIA_NEXUS_LICENSE_ISSUER: ${CAMELLIA_NEXUS_LICENSE_ISSUER:?set the production HTTPS issuer URL}
       CAMELLIA_NEXUS_LICENSE_AUDIENCE: ${CAMELLIA_NEXUS_LICENSE_AUDIENCE:-camellia-nexus-desktop}
       CAMELLIA_NEXUS_LICENSE_KEY_ID: ${CAMELLIA_NEXUS_LICENSE_KEY_ID:?set the active entitlement key id}
       CAMELLIA_NEXUS_LICENSE_PRIVATE_KEY_PEM_PATH: /run/secrets/entitlement_private_key
       CAMELLIA_NEXUS_WORKSPACE_KEYRING_PATH: /run/secrets/workspace_keyring
       CAMELLIA_NEXUS_WEBHOOK_KEYRING_PATH: /run/secrets/webhook_keyring
       CAMELLIA_NEXUS_OAUTH_CLIENT_ID: ${CAMELLIA_NEXUS_OAUTH_CLIENT_ID:-camellia-nexus-desktop}
-      CAMELLIA_NEXUS_OAUTH_REDIRECT_URIS: ${CAMELLIA_NEXUS_OAUTH_REDIRECT_URIS:-camellia-nexus://auth/callback}
+      CAMELLIA_NEXUS_OAUTH_REDIRECT_URIS: ${CAMELLIA_NEXUS_OAUTH_REDIRECT_URIS:?set the reviewed OAuth redirect URI allow-list}
       CAMELLIA_NEXUS_CLIENT_MINIMUM_VERSION: ${CAMELLIA_NEXUS_CLIENT_MINIMUM_VERSION:?set the minimum supported client version}
       CAMELLIA_NEXUS_CLIENT_RECOMMENDED_VERSION: ${CAMELLIA_NEXUS_CLIENT_RECOMMENDED_VERSION:?set the recommended client version}
       CAMELLIA_NEXUS_CLIENT_VERSION_ENFORCE_AFTER: "${CAMELLIA_NEXUS_CLIENT_VERSION_ENFORCE_AFTER:?set the absolute client-version enforcement time}"
-      CAMELLIA_NEXUS_CORS_ALLOWED_ORIGINS: ${CAMELLIA_NEXUS_CORS_ALLOWED_ORIGINS:-camellia-nexus://localhost}
+      CAMELLIA_NEXUS_CORS_ALLOWED_ORIGINS: ${CAMELLIA_NEXUS_CORS_ALLOWED_ORIGINS:?set the reviewed public CORS origin allow-list}
       CAMELLIA_NEXUS_DATABASE_MIGRATE: false
       CAMELLIA_NEXUS_TIME_MAX_FORWARD_JUMP_SECONDS: ${CAMELLIA_NEXUS_TIME_MAX_FORWARD_JUMP_SECONDS:-86400}
       CAMELLIA_NEXUS_HTTP_REQUEST_TIMEOUT_SECONDS: ${CAMELLIA_NEXUS_HTTP_REQUEST_TIMEOUT_SECONDS:-15}
@@ -82,6 +145,9 @@ services:
       - entitlement_private_key
       - workspace_keyring
       - webhook_keyring
+    networks:
+      - frontend
+      - database
     healthcheck:
       test: ["CMD", "camellia-nexus-management-server", "healthcheck", "http://127.0.0.1:8088/readyz"]
       interval: 10s
@@ -104,7 +170,7 @@ services:
       DATABASE_PASSWORD_FILE: /run/secrets/database_admin_web_password
       CAMELLIA_NEXUS_DATABASE_MIGRATE: false
       CAMELLIA_NEXUS_ADMIN_BIND: 0.0.0.0:8090
-      CAMELLIA_NEXUS_ADMIN_PUBLIC_ORIGIN: ${CAMELLIA_NEXUS_ADMIN_PUBLIC_ORIGIN:?set the private Admin HTTPS origin}
+      CAMELLIA_NEXUS_ADMIN_PUBLIC_ORIGIN: ${CAMELLIA_NEXUS_ADMIN_PUBLIC_ORIGIN:?set the production Admin console HTTPS origin}
       CAMELLIA_NEXUS_ADMIN_REQUEST_TIMEOUT_SECONDS: ${CAMELLIA_NEXUS_ADMIN_REQUEST_TIMEOUT_SECONDS:-180}
       CAMELLIA_NEXUS_ADMIN_MAX_IN_FLIGHT: ${CAMELLIA_NEXUS_ADMIN_MAX_IN_FLIGHT:-64}
       CAMELLIA_NEXUS_ADMIN_KEYRING_PATH: /run/secrets/admin_keyring
@@ -123,6 +189,10 @@ services:
       - database_admin_web_password
       - admin_keyring
       - admin_proxy_secret
+    networks:
+      - frontend
+      - database
+      - scanner
     healthcheck:
       test: ["CMD", "camellia-nexus-management-server", "healthcheck", "http://127.0.0.1:8090/readyz"]
       interval: 10s
@@ -154,6 +224,10 @@ services:
     secrets:
       - database_admin_worker_password
       - admin_keyring
+    networks:
+      - database
+      - scanner
+      - egress
     healthcheck:
       test: ["CMD", "camellia-nexus-management-server", "healthcheck", "http://127.0.0.1:9093/readyz"]
       interval: 10s
@@ -165,20 +239,20 @@ services:
     image: clamav/clamav:1.4.5_base@sha256:35ec19c1e8cbee7cae8a35c3b0ac62957d99b418e6902035b89a1778c39433e7
     volumes:
       - clamav-data:/var/lib/clamav
+    networks:
+      - scanner
+      - egress
     restart: unless-stopped
 
   postgres:
     image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+    depends_on:
+      secret-validator:
+        condition: service_completed_successfully
     environment:
       POSTGRES_DB: ${CAMELLIA_NEXUS_DATABASE_NAME:-nexus}
-      POSTGRES_USER: ${CAMELLIA_NEXUS_DATABASE_MIGRATE_ROLE:-nexus_migrate}
-      POSTGRES_PASSWORD_FILE: /run/secrets/database_migrate_password
-      CAMELLIA_NEXUS_DATABASE_PUBLIC_ROLE: ${CAMELLIA_NEXUS_DATABASE_PUBLIC_ROLE:-nexus_public}
-      CAMELLIA_NEXUS_DATABASE_PUBLIC_PASSWORD_FILE: /run/secrets/database_public_password
-      CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_ROLE: ${CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_ROLE:-nexus_admin_web}
-      CAMELLIA_NEXUS_DATABASE_ADMIN_WEB_PASSWORD_FILE: /run/secrets/database_admin_web_password
-      CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_ROLE: ${CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_ROLE:-nexus_admin_worker}
-      CAMELLIA_NEXUS_DATABASE_ADMIN_WORKER_PASSWORD_FILE: /run/secrets/database_admin_worker_password
+      POSTGRES_USER: ${CAMELLIA_NEXUS_DATABASE_BOOTSTRAP_ROLE:-nexus_bootstrap}
+      POSTGRES_PASSWORD_FILE: /run/secrets/database_bootstrap_password
     healthcheck:
       test: ["CMD-SHELL", "pg_isready --username $$POSTGRES_USER --dbname $$POSTGRES_DB"]
       interval: 5s
@@ -186,20 +260,15 @@ services:
       retries: 20
     volumes:
       - postgres-18-data:/var/lib/postgresql
-      - type: bind
-        source: ./deploy/postgres/init-runtime-roles.sh
-        target: /docker-entrypoint-initdb.d/10-runtime-roles.sh
-        read_only: true
-        bind:
-          create_host_path: false
     secrets:
-      - database_migrate_password
-      - database_public_password
-      - database_admin_web_password
-      - database_admin_worker_password
+      - database_bootstrap_password
+    networks:
+      - database
     restart: unless-stopped
 
 secrets:
+  database_bootstrap_password:
+    file: ${CAMELLIA_NEXUS_DATABASE_BOOTSTRAP_PASSWORD_FILE:-./secrets/database-bootstrap-password}
   database_migrate_password:
     file: ${CAMELLIA_NEXUS_DATABASE_MIGRATE_PASSWORD_FILE:-./secrets/database-migrate-password}
   database_public_password:
@@ -219,6 +288,15 @@ secrets:
   admin_proxy_secret:
     file: ${CAMELLIA_NEXUS_ADMIN_PROXY_SECRET_FILE:-./secrets/admin-proxy-secret}
 
+networks:
+  frontend:
+  database:
+    internal: true
+  scanner:
+    internal: true
+  egress:
+
 volumes:
   postgres-18-data:
   clamav-data:
+name: camellianexus-server

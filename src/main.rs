@@ -25,6 +25,8 @@ use tracing_subscriber::{
 enum CliAction {
     Serve,
     Migrate,
+    ValidateDeploymentSecrets,
+    DbBootstrap(camellia_nexus_management_server::deployment::BootstrapMode),
     Healthcheck(String),
     AdminWeb,
     AdminWorker,
@@ -41,6 +43,8 @@ impl CliAction {
         match self {
             Self::Serve => "serve",
             Self::Migrate => "migrate",
+            Self::ValidateDeploymentSecrets => "validate-deployment-secrets",
+            Self::DbBootstrap(_) => "db-bootstrap",
             Self::Healthcheck(_) => "healthcheck",
             Self::AdminWeb => "admin-web",
             Self::AdminWorker => "admin-worker",
@@ -121,7 +125,12 @@ async fn main() -> ExitCode {
                 }
             }
         }
-        CliAction::Serve | CliAction::Migrate | CliAction::AdminWeb | CliAction::AdminWorker => {}
+        CliAction::Serve
+        | CliAction::Migrate
+        | CliAction::ValidateDeploymentSecrets
+        | CliAction::DbBootstrap(_)
+        | CliAction::AdminWeb
+        | CliAction::AdminWorker => {}
     }
 
     let environment = match Environment::from_env() {
@@ -163,19 +172,48 @@ fn parse_cli_args(args: &[String]) -> Result<CliAction, String> {
         [flag] if matches!(flag.as_str(), "-h" | "--help" | "help") => Ok(CliAction::RootHelp),
         [flag] if matches!(flag.as_str(), "-V" | "--version" | "version") => Ok(CliAction::Version),
         [command, help]
-            if matches!(command.as_str(), "migrate" | "healthcheck" | "admin-web" | "admin-worker")
+            if matches!(
+                command.as_str(),
+                "migrate"
+                    | "healthcheck"
+                    | "admin-web"
+                    | "admin-worker"
+                    | "validate-deployment-secrets"
+                    | "db-bootstrap"
+            )
                 && matches!(help.as_str(), "-h" | "--help" | "help") =>
         {
             Ok(CliAction::RuntimeHelp(command.clone()))
         }
         [help, command]
             if help == "help"
-                && matches!(command.as_str(), "migrate" | "healthcheck" | "admin-web" | "admin-worker") =>
+                && matches!(
+                    command.as_str(),
+                    "migrate"
+                        | "healthcheck"
+                        | "admin-web"
+                        | "admin-worker"
+                        | "validate-deployment-secrets"
+                        | "db-bootstrap"
+                ) =>
         {
             Ok(CliAction::RuntimeHelp(command.clone()))
         }
         [command] if command == "serve" => Ok(CliAction::Serve),
         [command] if command == "migrate" => Ok(CliAction::Migrate),
+        [command] if command == "validate-deployment-secrets" => {
+            Ok(CliAction::ValidateDeploymentSecrets)
+        }
+        [command, operation] if command == "db-bootstrap" && operation == "reconcile" => Ok(
+            CliAction::DbBootstrap(
+                camellia_nexus_management_server::deployment::BootstrapMode::Reconcile,
+            ),
+        ),
+        [command, operation] if command == "db-bootstrap" && operation == "check" => Ok(
+            CliAction::DbBootstrap(
+                camellia_nexus_management_server::deployment::BootstrapMode::Check,
+            ),
+        ),
         [command, endpoint] if command == "healthcheck" => {
             validate_healthcheck_url(endpoint)?;
             Ok(CliAction::Healthcheck(endpoint.clone()))
@@ -204,6 +242,14 @@ fn parse_cli_args(args: &[String]) -> Result<CliAction, String> {
         ),
         [command, ..] if matches!(command.as_str(), "migrate" | "admin-web" | "admin-worker") => Err(
             format!("the {command} command accepts no positional arguments / {command} 命令不接受位置参数"),
+        ),
+        [command, ..] if command == "validate-deployment-secrets" => Err(
+            "validate-deployment-secrets accepts no positional arguments / validate-deployment-secrets 命令不接受位置参数"
+                .to_owned(),
+        ),
+        [command, ..] if command == "db-bootstrap" => Err(
+            "db-bootstrap requires reconcile or check / db-bootstrap 需要 reconcile 或 check"
+                .to_owned(),
         ),
         [command, ..] => Err(format!("unknown command: {command} / 未知命令：{command}")),
     }
@@ -282,6 +328,15 @@ async fn run(action: CliAction) -> Result<(), Box<dyn std::error::Error>> {
             grants_applied,
             "database migrations completed and schema is ready"
         );
+        return Ok(());
+    }
+    if action == CliAction::ValidateDeploymentSecrets {
+        camellia_nexus_management_server::deployment::validate_deployment_secrets()?;
+        return Ok(());
+    }
+    if let CliAction::DbBootstrap(mode) = &action {
+        camellia_nexus_management_server::deployment::run_database_bootstrap(*mode).await?;
+        tracing::info!(mode = ?mode, "database bootstrap contract is ready");
         return Ok(());
     }
 
@@ -673,6 +728,17 @@ mod tests {
     fn runtime_failures_have_unambiguous_command_names() {
         assert_eq!(CliAction::Serve.command_name(), "serve");
         assert_eq!(CliAction::Migrate.command_name(), "migrate");
+        assert_eq!(
+            CliAction::ValidateDeploymentSecrets.command_name(),
+            "validate-deployment-secrets"
+        );
+        assert_eq!(
+            CliAction::DbBootstrap(
+                camellia_nexus_management_server::deployment::BootstrapMode::Check
+            )
+            .command_name(),
+            "db-bootstrap"
+        );
         assert_eq!(CliAction::AdminWeb.command_name(), "admin-web");
         assert_eq!(CliAction::AdminWorker.command_name(), "admin-worker");
         assert_eq!(CliAction::Admin(Vec::new()).command_name(), "admin");
@@ -686,6 +752,23 @@ mod tests {
             parse_cli_args(&args(&["migrate"])).unwrap(),
             CliAction::Migrate
         );
+        assert_eq!(
+            parse_cli_args(&args(&["validate-deployment-secrets"])).unwrap(),
+            CliAction::ValidateDeploymentSecrets
+        );
+        assert_eq!(
+            parse_cli_args(&args(&["db-bootstrap", "reconcile"])).unwrap(),
+            CliAction::DbBootstrap(
+                camellia_nexus_management_server::deployment::BootstrapMode::Reconcile
+            )
+        );
+        assert_eq!(
+            parse_cli_args(&args(&["db-bootstrap", "check"])).unwrap(),
+            CliAction::DbBootstrap(
+                camellia_nexus_management_server::deployment::BootstrapMode::Check
+            )
+        );
+        assert!(parse_cli_args(&args(&["db-bootstrap", "adopt-existing"])).is_err());
         assert_eq!(
             parse_cli_args(&args(&["healthcheck", "http://127.0.0.1:8088/readyz"])).unwrap(),
             CliAction::Healthcheck("http://127.0.0.1:8088/readyz".to_owned())

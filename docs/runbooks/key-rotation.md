@@ -75,23 +75,37 @@ run the reference queries in the [Team workspace contract](../team-workspace.md#
 ## Admin forwarded-address proxy secret
 
 This secret authenticates ingress-provided client addresses and has no multi-key overlap. Schedule a
-short Admin maintenance window: stop external Admin traffic, generate a staged replacement with
-`scripts/generate-proxy-secret.sh <staged-path>`, apply the deployment's application-secret access
-policy, and verify that every effective `admin-web` identity can read the staged regular file while
-unrelated identities cannot. Atomically install it and update the trusted proxy and every
-`admin-web` replica as one change, restart, then verify a known client address is audited and forged
-forwarding headers are ignored. Roll back both sides together. Never temporarily disable validation
-to avoid downtime. The mounted file is subject to the common 64 KiB secret-file ceiling, and its
-single header value must contain 32–256 visible ASCII characters.
+short Admin maintenance window, write the replacement atomically below the project `secrets/`
+directory, stop `admin-web`, and recreate it with `docker compose up -d --no-deps --force-recreate
+--wait admin-web`. Verify that a known client address is audited and forged forwarding headers are
+ignored. Roll back the proxy and this file together. Never temporarily disable validation to avoid
+downtime. The mounted file is subject to the common 64 KiB secret-file ceiling, and its single
+header value must contain 32–256 visible ASCII characters.
 
 ## PostgreSQL and object-store credentials
 
-Create a new least-privilege credential first and test it from an isolated deployment. Quiesce
-workers and writes, atomically update deployment secret files, roll `migrate`/public/Admin/worker
-roles, verify readiness and a transaction, then revoke the old credential at the authority. If the
-database account cannot overlap credentials, use a maintenance window and update the password only
-after all writers are stopped. Do not embed reserved characters unescaped in a Compose URL; use a
-URL-safe generated value or a correctly percent-encoded secret.
+For single-host Compose, change an application database password only during a reviewed maintenance
+window. Replace the file atomically, stop the affected service(s), run the `db-bootstrap` reconcile
+one-shot, and recreate the affected service(s) with `docker compose up -d --no-deps
+--force-recreate --wait`. PostgreSQL itself does not need to restart; the role password is changed by
+`ALTER ROLE`, while the application connection pool must be recreated to read the new file. The
+service mapping is `nexus_public` → `management-server`, `nexus_admin_web` → `admin-web`, and
+`nexus_admin_worker` → `admin-worker`.
+
+The migration password has no long-lived consumer. Replace `database-migrate-password` atomically,
+then run `secret-validator`, `db-bootstrap`, and `migrate`; no application or PostgreSQL container
+needs recreation. In both cases, verify readiness and a representative transaction before closing
+the change. Do not put a password in a Compose URL, command line, ordinary environment value, or
+log.
+
+The bootstrap password is an installation credential. `POSTGRES_PASSWORD_FILE` is used only for an
+empty volume, so replacing that file does not change an existing `nexus_bootstrap` role. A bootstrap
+credential change requires a separately reviewed DBA procedure.
+
+For native systemd or an external object-store authority, create an overlapping least-privilege
+credential where supported, validate it in isolation, roll every consumer, and revoke the old value
+only after readiness and transaction checks. An authority that cannot overlap credentials requires a
+reviewed maintenance window.
 
 ## GitHub Release App and registry authority
 
