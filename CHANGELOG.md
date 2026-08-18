@@ -3,6 +3,13 @@
 All notable changes to the Camellia Nexus Management Server will be recorded
 here from the first commercial release onward.
 
+## [1.1.1] - 2026-08-18
+
+### Fixed
+
+- remediate management UI audit advisories (#32)
+
+
 ## [1.1.0] - 2026-08-10
 
 ### Added
