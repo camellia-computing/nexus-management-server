@@ -37,7 +37,7 @@ bash scripts/update-toolchains.sh \
   --node 24.18.0 --node-digest sha256:<64-hex-digest> \
   --rust 1.97.1 --rust-digest sha256:<64-hex-digest> \
   --postgres 18-alpine --postgres-digest sha256:<64-hex-digest> \
-  --pnpm 11.18.0
+  --pnpm 11.22.0
 ```
 
 The command rejects dirty target files, prepares every related edit, runs the version policy, and restores the original files if validation fails. Resolve each digest from the named upstream registry tag, review its manifest and release notes, and run the complete quality, PostgreSQL, administration UI, browser and container gates before merging. CI denies yanked Cargo packages in addition to audited vulnerabilities.
