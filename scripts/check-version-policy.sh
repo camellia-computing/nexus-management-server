@@ -66,7 +66,7 @@ require_workflow_text() {
   grep -Fq -- "$text" "$file" || fail "$message"
 }
 
-cross_repo_action='uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1'
+cross_repo_action='uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510'
 cross_repo_workflows=(
   .github/workflows/ci.yml
   .github/workflows/contract-monitor.yml
@@ -383,17 +383,17 @@ done
 
 policy=docs/dependency-management.md
 [[ -f "$policy" ]] || fail 'dependency policy documentation is missing'
-for exception in 'pnpm 11' cookie '@napi-rs/wasm-runtime' 'TypeScript 7' RUSTSEC-2026-0235 workflow_run; do
+for exception in 'pnpm 11' cookie '@napi-rs/wasm-runtime' 'TypeScript 7' workflow_run; do
   grep -q "$exception" "$policy" || fail "dependency exception is undocumented: $exception"
 done
-grep -Fq 'cargo audit --deny yanked --ignore RUSTSEC-2026-0235' .github/workflows/ci.yml ||
-  fail 'Cargo audit must deny yanked packages and ignore only the registered unreachable rkyv advisory'
+grep -Fxq '          cargo audit --deny yanked' .github/workflows/ci.yml ||
+  fail 'Cargo audit must deny yanked packages without advisory ignores'
 audit_ignore_count="$(
-  grep -RhoE -- '--ignore[[:space:]]+RUSTSEC-[0-9]{4}-[0-9]{4}' .github/workflows |
+  { grep -RhoE -- '--ignore[[:space:]]+RUSTSEC-[0-9]{4}-[0-9]{4}' .github/workflows || true; } |
     wc -l |
     tr -d '[:space:]'
 )"
-[[ "$audit_ignore_count" == 1 ]] || fail 'exactly one registered Rust advisory ignore is permitted'
+[[ "$audit_ignore_count" == 0 ]] || fail 'Rust advisory ignores are not permitted'
 
 dependabot=.github/dependabot.yml
 [[ -f "$dependabot" ]] || fail 'Dependabot configuration is missing'
