@@ -208,6 +208,7 @@ jobs:
         run: |
           bash scripts/check-version-policy.sh
           bash scripts/test-update-toolchains.sh
+          node scripts/test-verify-service-worker.mjs
       - name: Admin UI
         working-directory: admin-ui
         run: |

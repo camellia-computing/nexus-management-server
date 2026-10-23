@@ -8,7 +8,7 @@ if [[ -z "$image" ]]; then
   exit 2
 fi
 
-for command in curl docker jq python3 tar; do
+for command in curl docker jq node python3 tar; do
   command -v "$command" >/dev/null || {
     echo "$command is required for the container runtime test" >&2
     exit 2
@@ -554,11 +554,7 @@ grep -Eiq '^cache-control:[[:space:]]*no-store, max-age=0' \
   "$temporary_directory/service-worker.headers"
 grep -Fq '/_app/immutable/' "$temporary_directory/service-worker.js"
 grep -Fq '/icons/' "$temporary_directory/service-worker.js"
-if grep -Eq '/api/v1|index\.html|fallback\.html|manifest\.webmanifest|appearance-init\.js' \
-  "$temporary_directory/service-worker.js"; then
-  echo 'service worker precaches a mutable or authenticated resource' >&2
-  exit 1
-fi
+node "$repository_root/scripts/verify-service-worker.mjs" "$temporary_directory/service-worker.js"
 
 for icon in \
   camellia-console.v1-192.png \
