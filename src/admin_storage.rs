@@ -191,7 +191,7 @@ fn parse_clamav_address(value: &str) -> Result<String, String> {
             .ok_or_else(invalid);
     }
 
-    let (host, port) = value.rsplit_once(':').ok_or_else(&invalid)?;
+    let (host, port) = value.rsplit_once(':').ok_or_else(invalid)?;
     let port = port.parse::<u16>().map_err(|_| invalid())?;
     let dns_name = host.strip_suffix('.').unwrap_or(host);
     let valid_host = !dns_name.is_empty()

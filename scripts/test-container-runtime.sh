@@ -8,7 +8,7 @@ if [[ -z "$image" ]]; then
   exit 2
 fi
 
-for command in curl docker jq python3 tar; do
+for command in curl docker jq node python3 tar; do
   command -v "$command" >/dev/null || {
     echo "$command is required for the container runtime test" >&2
     exit 2
@@ -36,8 +36,8 @@ admin="camellia-admin-$suffix"
 worker="camellia-worker-$suffix"
 admin_live="camellia-admin-live-$suffix"
 secrets_volume_created=0
-postgres_image='postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15'
-clamav_image='clamav/clamav:1.4.5@sha256:6b7c8e09559250f25b0184516b0a2ae805136e57485260e16c780c9fd6e6aba9'
+postgres_image='postgres:18-alpine@sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5'
+clamav_image='clamav/clamav:1.4.6@sha256:3bba6dd5ac6663d55b80f86a3126e146612d93b593cc2617188d13f637d91260'
 
 run_live_admin_ui="${CAMELLIA_NEXUS_RUN_ADMIN_UI_LIVE:-0}"
 case "$run_live_admin_ui" in
@@ -554,11 +554,7 @@ grep -Eiq '^cache-control:[[:space:]]*no-store, max-age=0' \
   "$temporary_directory/service-worker.headers"
 grep -Fq '/_app/immutable/' "$temporary_directory/service-worker.js"
 grep -Fq '/icons/' "$temporary_directory/service-worker.js"
-if grep -Eq '/api/v1|index\.html|fallback\.html|manifest\.webmanifest|appearance-init\.js' \
-  "$temporary_directory/service-worker.js"; then
-  echo 'service worker precaches a mutable or authenticated resource' >&2
-  exit 1
-fi
+node "$repository_root/scripts/verify-service-worker.mjs" "$temporary_directory/service-worker.js"
 
 for icon in \
   camellia-console.v1-192.png \

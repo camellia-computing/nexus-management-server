@@ -78,7 +78,11 @@
   ></button>{/if}
 <aside class:collapsed class:mobile-open={mobileOpen} class="sidebar">
   <div class="sidebar-head">
-    <button class="brand" onclick={() => onNavigate('overview')} aria-label="Camellia Console">
+    <button
+      class="brand"
+      onclick={() => onNavigate('overview')}
+      aria-label={collapsed ? 'Camellia Console' : undefined}
+    >
       <BrandMark compact={collapsed} />
       {#if !collapsed}
         <span><strong>Camellia</strong><small>Console</small></span>
@@ -92,8 +96,8 @@
   </div>
 
   <div class="nav-search">
-    <button onclick={onSearch} aria-label={messages[$locale].searchNavigation}>
-      <Search size={18} /><span>{copy[$locale].search}</span><kbd>⌘/Ctrl K</kbd>
+    <button onclick={onSearch} title={messages[$locale].searchNavigation}>
+      <Search size={18} /><span>{copy[$locale].search}</span><kbd aria-hidden="true">⌘/Ctrl K</kbd>
     </button>
   </div>
 

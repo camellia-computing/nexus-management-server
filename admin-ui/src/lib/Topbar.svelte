@@ -264,11 +264,11 @@
         bind:this={userButton}
         class="user-button"
         onclick={() => toggleMenu('user')}
-        aria-label={messages[$locale].userMenu}
+        title={messages[$locale].userMenu}
         aria-haspopup="menu"
         aria-expanded={menu === 'user'}
       >
-        <span>{user.displayName.slice(0, 1).toUpperCase()}</span>
+        <span aria-hidden="true">{user.displayName.slice(0, 1).toUpperCase()}</span>
         <div>
           <strong>{user.displayName}</strong><small
             >{adminRoleLabel(user.roles[0] ?? '', $locale)}</small

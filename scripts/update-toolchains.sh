@@ -107,6 +107,7 @@ if [[ -n "$postgres_tag" ]]; then
   add_target docker-compose.yml
   add_target .github/workflows/ci.yml
   add_target scripts/build-e2e-bundle.sh
+  add_target scripts/test-container-runtime.sh
 fi
 for file in "${targets[@]}"; do
   [[ -f "$file" ]] || fail "target file is missing: $file"
@@ -168,6 +169,9 @@ if [[ -n "$postgres_tag" ]]; then
     '^        image: postgres:[^@[:space:]]+@sha256:[0-9a-f]{64}$' \
     "        image: postgres:$postgres_tag@$postgres_digest"
   replace_line scripts/build-e2e-bundle.sh \
+    "^postgres_image='postgres:[^@[:space:]]+@sha256:[0-9a-f]{64}'$" \
+    "postgres_image='postgres:$postgres_tag@$postgres_digest'"
+  replace_line scripts/test-container-runtime.sh \
     "^postgres_image='postgres:[^@[:space:]]+@sha256:[0-9a-f]{64}'$" \
     "postgres_image='postgres:$postgres_tag@$postgres_digest'"
 fi

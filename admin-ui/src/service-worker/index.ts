@@ -1,13 +1,14 @@
 /// <reference lib="webworker" />
 
-import { build, files, version } from '$service-worker';
+import { version } from '$app/env';
+import { assets, immutable } from '$app/manifest';
 
 const worker = self as unknown as ServiceWorkerGlobalScope;
 const cachePrefix = 'camellia-console-shell-';
 const cacheName = `${cachePrefix}${version}`;
 const normalizePath = (path: string) => (path.startsWith('/') ? path : `/${path}`);
-const shellPaths = [...build, ...files]
-  .map(normalizePath)
+const shellPaths = [...immutable, ...assets]
+  .map(({ path }) => normalizePath(path))
   .filter(
     (path) =>
       path.startsWith('/_app/immutable/') || (path.startsWith('/icons/') && path.includes('.v1'))

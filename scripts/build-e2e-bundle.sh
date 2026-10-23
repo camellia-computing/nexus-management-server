@@ -4,7 +4,7 @@ umask 077
 
 server_image="${1:-}"
 output_directory="${2:-}"
-postgres_image='postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15'
+postgres_image='postgres:18-alpine@sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5'
 
 fail() {
   echo "Windows E2E bundle: $*" >&2
