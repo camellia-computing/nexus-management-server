@@ -36,8 +36,8 @@ admin="camellia-admin-$suffix"
 worker="camellia-worker-$suffix"
 admin_live="camellia-admin-live-$suffix"
 secrets_volume_created=0
-postgres_image='postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15'
-clamav_image='clamav/clamav:1.4.5@sha256:6b7c8e09559250f25b0184516b0a2ae805136e57485260e16c780c9fd6e6aba9'
+postgres_image='postgres:18-alpine@sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5'
+clamav_image='clamav/clamav:1.4.5@sha256:4de20bd9ab45a4b763c5412b769217ef5082572ebc8a63aff1a77943419e5dd8'
 
 run_live_admin_ui="${CAMELLIA_NEXUS_RUN_ADMIN_UI_LIVE:-0}"
 case "$run_live_admin_ui" in

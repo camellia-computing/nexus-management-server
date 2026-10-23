@@ -257,7 +257,7 @@ async function enrollRestrictedAdministrator(browser: Browser, token: string) {
   );
   expect(denied.status()).toBe(403);
   await expectAccessible(page);
-  await page.getByRole('button', { name: 'Administrator menu' }).click();
+  await page.getByTitle('Administrator menu').click();
   await page.getByRole('menuitem', { name: 'Sign out', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible();
   await context.close();
@@ -541,7 +541,7 @@ test('the final image supports complete real control-plane journeys', async ({ p
   }
 
   await page.setViewportSize({ width: 1440, height: 900 });
-  let administratorMenu = page.getByRole('button', { name: 'Administrator menu' });
+  let administratorMenu = page.getByTitle('Administrator menu');
   await administratorMenu.click();
   await page.getByRole('menuitem', { name: 'Profile' }).click();
   dialog = page.getByRole('dialog', { name: 'Profile' });
@@ -551,7 +551,7 @@ test('the final image supports complete real control-plane journeys', async ({ p
   await expect(dialog).not.toBeVisible();
 
   const rotatedPassword = 'Rotated-Console-47!River';
-  administratorMenu = page.getByRole('button', { name: 'Administrator menu' });
+  administratorMenu = page.getByTitle('Administrator menu');
   await administratorMenu.click();
   await page.getByRole('menuitem', { name: 'Change password' }).click();
   dialog = page.getByRole('dialog', { name: 'Change password' });
@@ -568,7 +568,7 @@ test('the final image supports complete real control-plane journeys', async ({ p
   await page.getByRole('button', { name: 'Sign in securely' }).click();
   await expect(page.getByRole('alert')).toContainText('invalid administrator credentials');
   await signIn(page, credentials.username, rotatedPassword, postRotationTotp);
-  administratorMenu = page.getByRole('button', { name: 'Administrator menu' });
+  administratorMenu = page.getByTitle('Administrator menu');
   await expect(administratorMenu).toContainText('Runtime Browser Verified');
   await administratorMenu.click();
   await page.getByRole('menuitem', { name: 'Sign out', exact: true }).click();

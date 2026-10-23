@@ -145,10 +145,10 @@ if grep -q 'RELEASE_APP_' .github/workflows/contract-monitor.yml ||
 fi
 require_workflow_text .github/workflows/ci.yml 'uses: astral-sh/setup-uv@' \
   'CI does not install the pinned workflow security runtime'
-require_workflow_text .github/workflows/ci.yml 'version: 0.12.0' \
+require_workflow_text .github/workflows/ci.yml 'version: 0.13.5' \
   'CI does not select the reviewed exact uv release'
 require_workflow_text .github/workflows/ci.yml \
-  'run: uvx --from zizmor==1.28.0 zizmor --strict-collection --persona=pedantic --format=github .' \
+  'run: uvx --from zizmor==1.31.1 zizmor --strict-collection --persona=pedantic --format=github .' \
   'CI does not block on the reviewed pedantic workflow security scan'
 
 grep -q 'rustup toolchain install --no-self-update' "${workflow_files[@]}" || fail 'workflows must install the repository Rust toolchain'
@@ -269,9 +269,10 @@ done < <(sed -nE 's/^[[:space:]]+image:[[:space:]]+([^[:space:]]+).*/\1/p' docke
 compose_postgres="$(sed -nE 's/^[[:space:]]+image:[[:space:]]+(postgres:[^[:space:]]+).*/\1/p' docker-compose.yml)"
 workflow_postgres="$(sed -nE 's/^[[:space:]]+image:[[:space:]]+(postgres:[^[:space:]]+).*/\1/p' .github/workflows/ci.yml)"
 bundle_postgres="$(sed -nE "s/^postgres_image='(postgres:[^']+)'$/\1/p" scripts/build-e2e-bundle.sh)"
+runtime_postgres="$(sed -nE "s/^postgres_image='(postgres:[^']+)'$/\1/p" scripts/test-container-runtime.sh)"
 [[ -n "$compose_postgres" && "$compose_postgres" == "$workflow_postgres" &&
-  "$compose_postgres" == "$bundle_postgres" ]] ||
-  fail 'CI, Compose, and the Windows E2E bundle must use the same PostgreSQL digest'
+  "$compose_postgres" == "$bundle_postgres" && "$compose_postgres" == "$runtime_postgres" ]] ||
+  fail 'CI, Compose, runtime tests, and the Windows E2E bundle must use the same PostgreSQL digest'
 compose_clamav="$(sed -nE 's/^[[:space:]]+image:[[:space:]]+(clamav\/clamav:[^[:space:]]+).*/\1/p' docker-compose.yml)"
 runtime_clamav="$(sed -nE "s/^clamav_image='(clamav\\/clamav:[^']+)'$/\\1/p" scripts/test-container-runtime.sh)"
 [[ "$runtime_clamav" =~ ^clamav/clamav:[0-9]+\.[0-9]+\.[0-9]+@sha256:[0-9a-f]{64}$ ]] ||
@@ -383,7 +384,7 @@ done
 
 policy=docs/dependency-management.md
 [[ -f "$policy" ]] || fail 'dependency policy documentation is missing'
-for exception in 'pnpm 11' cookie '@napi-rs/wasm-runtime' 'TypeScript 7' workflow_run; do
+for exception in 'single-document' '@napi-rs/wasm-runtime' 'TypeScript 7' workflow_run; do
   grep -q "$exception" "$policy" || fail "dependency exception is undocumented: $exception"
 done
 grep -Fxq '          cargo audit --deny yanked' .github/workflows/ci.yml ||
@@ -400,8 +401,17 @@ dependabot=.github/dependabot.yml
 ecosystem_count="$(grep -c 'package-ecosystem:' "$dependabot")"
 default_cooldown_count="$(grep -c 'default-days: 7' "$dependabot")"
 [[ "$ecosystem_count" == "$default_cooldown_count" ]] || fail 'every Dependabot ecosystem must define the default cooldown'
-if grep -qE 'package-ecosystem:[[:space:]]+(npm|rust-toolchain)' "$dependabot"; then
-  fail 'pnpm 11 and coupled Rust toolchain updates must use scripts/update-toolchains.sh'
+if grep -qE 'package-ecosystem:[[:space:]]+rust-toolchain' "$dependabot"; then
+  fail 'coupled Rust toolchain updates must use scripts/update-toolchains.sh'
+fi
+awk '
+  /package-ecosystem:/ { npm = ($NF == "npm"); next }
+  npm && /directory:/ { if ($NF == "/admin-ui") found++ }
+  END { exit !(found == 1) }
+' "$dependabot" || fail 'Dependabot must update the owning frontend directory'
+grep -q '^lockfileVersion:' admin-ui/pnpm-lock.yaml || fail 'the dependency graph requires an application lockfile'
+if grep -qE '^(---|\\.\\.\\.)[[:space:]]*$' admin-ui/pnpm-lock.yaml; then
+  fail 'the dependency graph requires a single-document pnpm lockfile'
 fi
 unsupported_cooldowns="$(awk '
   /package-ecosystem:/ {

@@ -2,19 +2,19 @@
   import { Search } from '@lucide/svelte';
   import { onMount } from 'svelte';
 
-  import Administrators from '$lib/Administrators.svelte';
-  import AccountSettingsDialog from '$lib/AccountSettingsDialog.svelte';
-  import Billing from '$lib/Billing.svelte';
-  import Dashboard from '$lib/Dashboard.svelte';
-  import Enrollment from '$lib/Enrollment.svelte';
-  import Login from '$lib/Login.svelte';
-  import Resources from '$lib/Resources.svelte';
-  import Sidebar from '$lib/Sidebar.svelte';
-  import StepUpDialog from '$lib/StepUpDialog.svelte';
-  import SystemPage from '$lib/SystemPage.svelte';
-  import Team from '$lib/Team.svelte';
-  import Topbar from '$lib/Topbar.svelte';
-  import { focusTrap } from '$lib/actions/focusTrap';
+  import Administrators from '#lib/Administrators.svelte';
+  import AccountSettingsDialog from '#lib/AccountSettingsDialog.svelte';
+  import Billing from '#lib/Billing.svelte';
+  import Dashboard from '#lib/Dashboard.svelte';
+  import Enrollment from '#lib/Enrollment.svelte';
+  import Login from '#lib/Login.svelte';
+  import Resources from '#lib/Resources.svelte';
+  import Sidebar from '#lib/Sidebar.svelte';
+  import StepUpDialog from '#lib/StepUpDialog.svelte';
+  import SystemPage from '#lib/SystemPage.svelte';
+  import Team from '#lib/Team.svelte';
+  import Topbar from '#lib/Topbar.svelte';
+  import { focusTrap } from '#lib/actions/focusTrap.ts';
   import {
     ApiError,
     api,
@@ -23,9 +23,9 @@
     type AdminUser,
     type RecoveryEnrollment,
     type SessionInfo
-  } from '$lib/api';
-  import { copy, defineCopy, locale } from '$lib/i18n';
-  import { readPreference, writePreference } from '$lib/preferences';
+  } from '#lib/api.ts';
+  import { copy, defineCopy, locale } from '#lib/i18n.ts';
+  import { readPreference, writePreference } from '#lib/preferences.ts';
 
   const messages = defineCopy(
     {

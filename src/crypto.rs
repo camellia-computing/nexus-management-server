@@ -119,7 +119,7 @@ pub fn generate_activation_code() -> String {
         ACTIVATION_CODE_PREFIX.len() + ACTIVATION_CODE_GROUPS * (ACTIVATION_CODE_GROUP_LEN + 1),
     );
     output.push_str(ACTIVATION_CODE_PREFIX);
-    for group in random.chunks_exact(ACTIVATION_CODE_GROUP_LEN) {
+    for group in random.as_chunks::<ACTIVATION_CODE_GROUP_LEN>().0 {
         output.push('-');
         for byte in group {
             output.push(ACTIVATION_CODE_ALPHABET[(byte & 31) as usize] as char);
@@ -151,7 +151,7 @@ pub fn canonicalize_activation_code(value: &str) -> Option<String> {
         ACTIVATION_CODE_PREFIX.len() + ACTIVATION_CODE_GROUPS * (ACTIVATION_CODE_GROUP_LEN + 1),
     );
     output.push_str(ACTIVATION_CODE_PREFIX);
-    for group in normalized.chunks_exact(ACTIVATION_CODE_GROUP_LEN) {
+    for group in normalized.as_chunks::<ACTIVATION_CODE_GROUP_LEN>().0 {
         output.push('-');
         output.extend(group.iter().map(|byte| *byte as char));
     }

@@ -169,11 +169,6 @@
     class="sync-state"
     onclick={load}
     disabled={loading}
-    aria-label={loading
-      ? messages[$locale].synchronizing
-      : failed
-        ? messages[$locale].refresh
-        : messages[$locale].synchronized}
     title={data.generatedAt
       ? new Date(data.generatedAt * 1000).toLocaleString(localeTag($locale))
       : undefined}

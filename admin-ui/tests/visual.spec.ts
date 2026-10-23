@@ -74,6 +74,9 @@ async function mockConsole(page: Page, authenticated: boolean, options: MockCons
             }
       );
     }
+    if (path.endsWith('/audit-events')) {
+      return route.fulfill({ json: [] });
+    }
     if (path.endsWith('/dashboard')) {
       return route.fulfill({
         json: {
@@ -544,7 +547,7 @@ test('signing out after enrollment returns to sign in', async ({ page }) => {
   await page.getByRole('button', { name: 'Enter the admin console' }).click();
   await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
 
-  await page.getByRole('button', { name: 'Administrator menu' }).click();
+  await page.getByTitle('Administrator menu').click();
   await page.getByRole('menuitem', { name: 'Sign out', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Enroll a platform administrator' })).toHaveCount(
@@ -890,7 +893,7 @@ test('topbar menus handle long identities, outside clicks, checks, and keyboard 
   });
   await page.setViewportSize({ width: 1024, height: 768 });
   await page.goto('/');
-  await page.getByRole('button', { name: '管理员菜单' }).click();
+  await page.getByTitle('管理员菜单').click();
   const userMenu = page.getByRole('menu');
   await expect(userMenu.getByRole('menuitem', { name: '个人资料' })).toBeFocused();
   expect(
@@ -1181,7 +1184,7 @@ test('self-service profile and password changes preserve audit and session bound
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: '管理员菜单' }).click();
+  await page.getByTitle('管理员菜单').click();
   await page.getByRole('menuitem', { name: '个人资料' }).click();
   const profile = page.getByRole('dialog', { name: '个人资料' });
   await expect(profile.getByLabel('登录用户名')).toBeDisabled();
@@ -1189,13 +1192,13 @@ test('self-service profile and password changes preserve audit and session bound
   await profile.getByLabel('操作原因').fill('align the operator display name');
   await profile.getByRole('button', { name: '保存资料' }).click();
   await expect(profile).not.toBeVisible();
-  await expect(page.getByRole('button', { name: '管理员菜单' })).toBeFocused();
+  await expect(page.getByTitle('管理员菜单')).toBeFocused();
   expect(profileRequest).toEqual({
     displayName: 'Primary operations',
     reason: 'align the operator display name'
   });
 
-  await page.getByRole('button', { name: '管理员菜单' }).click();
+  await page.getByTitle('管理员菜单').click();
   await page.getByRole('menuitem', { name: '修改密码' }).click();
   const password = page.getByRole('dialog', { name: '修改密码' });
   await password.getByRole('textbox', { name: /^新密码 使用/ }).fill('Distant-Cedar-94!River');
@@ -1270,7 +1273,7 @@ test('stale profile and resource versions reload authoritative state before retr
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: '管理员菜单' }).click();
+  await page.getByTitle('管理员菜单').click();
   await page.getByRole('menuitem', { name: '个人资料' }).click();
   let dialog = page.getByRole('dialog', { name: '个人资料' });
   await dialog.getByLabel('显示名称').fill('Stale local value');

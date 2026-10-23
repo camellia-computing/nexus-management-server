@@ -236,7 +236,7 @@ services:
       start_period: 15s
 
   clamav:
-    image: clamav/clamav:1.4.5_base@sha256:35ec19c1e8cbee7cae8a35c3b0ac62957d99b418e6902035b89a1778c39433e7
+    image: clamav/clamav:1.4.5_base@sha256:38850b4560ce21c36cacfb8d8ce2c172dcf0029db6c47342d882e04b818a2fef
     volumes:
       - clamav-data:/var/lib/clamav
     networks:
@@ -245,7 +245,7 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+    image: postgres:18-alpine@sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5
     depends_on:
       secret-validator:
         condition: service_completed_successfully

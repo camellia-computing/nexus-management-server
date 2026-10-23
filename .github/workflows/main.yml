@@ -43,7 +43,7 @@ jobs:
 
   validation:
     name: Validate
-    uses: ./.github/workflows/ci.yml
+    uses: ./.github/workflows/ci.yml # zizmor: ignore[self-repository] actionlint 1.7.12 requires this form; GitHub resolves the reviewed same-commit source.
     secrets:
       CROSS_REPO_READ_APP_PRIVATE_KEY: ${{ secrets.CROSS_REPO_READ_APP_PRIVATE_KEY }}
 
@@ -56,7 +56,7 @@ jobs:
       needs.policy.result == 'success' &&
       needs.validation.result == 'success'
     needs: [policy, validation]
-    uses: ./.github/workflows/release-manager.yml
+    uses: ./.github/workflows/release-manager.yml # zizmor: ignore[self-repository] actionlint 1.7.12 requires this form; GitHub resolves the reviewed same-commit source.
     with:
       validation-run-id: ${{ needs.validation.outputs.validation-run-id }}
       verified-sha: ${{ needs.validation.outputs.validated-sha }}

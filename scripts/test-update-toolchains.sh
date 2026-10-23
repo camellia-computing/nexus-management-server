@@ -17,6 +17,7 @@ cp "$repository_root/.dockerignore" "$repository_root/.env.example" "$repository
   "$repository_root/Cargo.toml" "$repository_root/rust-toolchain.toml" \
   "$repository_root/Dockerfile" "$repository_root/docker-compose.yml" "$fixture/"
 cp "$repository_root/admin-ui/package.json" "$repository_root/admin-ui/pnpm-workspace.yaml" \
+  "$repository_root/admin-ui/pnpm-lock.yaml" \
   "$fixture/admin-ui/"
 cp "$repository_root/scripts/check-version-policy.sh" "$repository_root/scripts/update-toolchains.sh" "$fixture/scripts/"
 cp "$repository_root/scripts/build-e2e-bundle.sh" "$repository_root/scripts/provision-e2e-compose.sh" \
@@ -55,6 +56,15 @@ grep -Fq "postgres:19-alpine@$postgres_digest" "$fixture/docker-compose.yml" || 
 grep -Fq "postgres:19-alpine@$postgres_digest" "$fixture/.github/workflows/ci.yml" || fail 'CI PostgreSQL image was not updated'
 grep -Fq "postgres_image='postgres:19-alpine@$postgres_digest'" "$fixture/scripts/build-e2e-bundle.sh" ||
   fail 'Windows E2E bundle PostgreSQL image was not updated'
+grep -Fq "postgres_image='postgres:19-alpine@$postgres_digest'" "$fixture/scripts/test-container-runtime.sh" ||
+  fail 'runtime-test PostgreSQL image was not updated'
+
+git -C "$fixture" reset -q --hard HEAD
+sed -i "s|^postgres_image=.*|postgres_image='postgres:99-alpine@sha256:$(printf 'd%.0s' {1..64})'|" \
+  "$fixture/scripts/test-container-runtime.sh"
+if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
+  fail 'a runtime-test PostgreSQL digest that differs from Compose was accepted'
+fi
 
 git -C "$fixture" reset -q --hard HEAD
 sed -i -E "s|clamav_image='clamav/clamav:[0-9]+\\.[0-9]+\\.[0-9]+@|clamav_image='clamav/clamav:9.9.9@|" \
@@ -109,7 +119,7 @@ if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
 fi
 
 git -C "$fixture" reset -q --hard HEAD
-sed -i 's/zizmor==1.28.0/zizmor==1.27.0/' "$fixture/.github/workflows/ci.yml"
+sed -i 's/zizmor==1.31.1/zizmor==1.27.0/' "$fixture/.github/workflows/ci.yml"
 if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
   fail 'an unreviewed workflow security scanner version was accepted'
 fi
@@ -125,6 +135,18 @@ sed -i 's/lease_generation = lease_generation + 1/lease_generation = lease_gener
   "$fixture/src/admin_jobs.rs"
 if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
   fail 'a non-fencing bulk-job lease was accepted'
+fi
+
+git -C "$fixture" reset -q --hard HEAD
+printf '\n---\npackageManager: pnpm@99.0.0\n' >> "$fixture/admin-ui/pnpm-lock.yaml"
+if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
+  fail 'a multi-document lockfile was accepted despite the dependency graph limitation'
+fi
+
+git -C "$fixture" reset -q --hard HEAD
+sed -i 's/package-ecosystem: npm/package-ecosystem: unavailable/' "$fixture/.github/dependabot.yml"
+if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
+  fail 'the frontend dependency updater could be removed silently'
 fi
 
 printf '%s\n' 'Toolchain updater tests passed.'

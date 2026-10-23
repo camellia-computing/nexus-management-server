@@ -120,7 +120,7 @@ impl RuntimeMetrics {
         self.inner.http_in_flight.fetch_sub(1, Ordering::Relaxed);
         self.inner.http_requests[status_class].fetch_add(1, Ordering::Relaxed);
         let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
-        let _ = self.inner.http_duration_micros.fetch_update(
+        let _ = self.inner.http_duration_micros.try_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |value| Some(value.saturating_add(micros)),
