@@ -236,7 +236,7 @@ services:
       start_period: 15s
 
   clamav:
-    image: clamav/clamav:1.4.5_base@sha256:38850b4560ce21c36cacfb8d8ce2c172dcf0029db6c47342d882e04b818a2fef
+    image: clamav/clamav:1.4.6_base@sha256:41f0d067c0f2e87a7083d4ca202373aeec18dd0a3f8619c1a8c8556d747705e2
     volumes:
       - clamav-data:/var/lib/clamav
     networks:
