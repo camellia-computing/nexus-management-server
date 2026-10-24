@@ -7,7 +7,7 @@ use std::{
 
 use argon2::{
     Algorithm, Argon2, Params, Version,
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chacha20poly1305::{
@@ -2153,9 +2153,8 @@ fn hash_password(password: &str, keyring: &AdminKeyring, key_id: &str) -> AdminA
             .map_err(|_| AdminAuthError::Keyring)?;
     let mut salt_bytes = [0_u8; 16];
     rand::fill(&mut salt_bytes);
-    let salt = SaltString::encode_b64(&salt_bytes).map_err(|_| AdminAuthError::Keyring)?;
     argon2
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password_with_salt(password.as_bytes(), &salt_bytes)
         .map(|hash| hash.to_string())
         .map_err(|_| AdminAuthError::Keyring)
 }
@@ -2389,6 +2388,32 @@ const COMMON_PASSWORDS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn peppered_argon2_hash_reference() {
+        let params = Params::new(64 * 1024, 3, 1, None).unwrap();
+        let argon2 =
+            Argon2::new_with_secret(&[9_u8; 32], Algorithm::Argon2id, Version::V0x13, params)
+                .unwrap();
+        let encoded = argon2
+            .hash_password_with_salt(b"fixture-password", &[7_u8; 16])
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            encoded,
+            "$argon2id$v=19$m=65536,t=3,p=1$BwcHBwcHBwcHBwcHBwcHBw$prJY/KJDElecy+vtclAacMpKLAKaUoGn1+eQ+skVcjg"
+        );
+        assert!(
+            argon2
+                .verify_password(b"fixture-password", &PasswordHash::new(&encoded).unwrap())
+                .is_ok()
+        );
+        assert!(
+            argon2
+                .verify_password(b"wrong-password", &PasswordHash::new(&encoded).unwrap())
+                .is_err()
+        );
+    }
 
     #[test]
     fn worker_keyring_readiness_preserves_the_credential_boundary() {
