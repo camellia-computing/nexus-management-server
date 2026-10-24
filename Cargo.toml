@@ -10,7 +10,7 @@ publish = false
 
 [dependencies]
 async-trait = "0.1.89"
-argon2 = "0.5.3"
+argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "password-hash"] }
 axum = { version = "0.8.9", features = ["multipart"] }
 base64 = { version = "0.23.0", default-features = false, features = ["std"] }
 bytes = "1.11.1"

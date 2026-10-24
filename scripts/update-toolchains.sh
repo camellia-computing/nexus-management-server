@@ -6,7 +6,8 @@ usage() {
 Usage: scripts/update-toolchains.sh [options]
 
 Update one or more coupled toolchain and runtime versions as a validated transaction:
-  --node <24.x.y>            Update .node-version and the Node.js builder tag
+  --node <x.y.z>             Update .node-version, engines.node and the builder tag
+  --node-types <x.y.z>       Update @types/node with a reviewed Node.js major change
   --node-digest <sha256:...> Immutable digest for node:<version>-bookworm-slim
   --pnpm <x.y.z>             Update admin-ui/package.json packageManager
   --rust <x.y.z>             Update Rust sources and the Rust builder tag
@@ -26,6 +27,7 @@ fail() {
 }
 
 node_version=
+node_types=
 node_digest=
 pnpm_version=
 rust_version=
@@ -34,10 +36,11 @@ postgres_tag=
 postgres_digest=
 while (($# > 0)); do
   case "$1" in
-    --node|--node-digest|--pnpm|--rust|--rust-digest|--postgres|--postgres-digest)
+    --node|--node-types|--node-digest|--pnpm|--rust|--rust-digest|--postgres|--postgres-digest)
       (($# >= 2)) || fail "$1 requires a value"
       case "$1" in
         --node) node_version="$2" ;;
+        --node-types) node_types="$2" ;;
         --node-digest) node_digest="$2" ;;
         --pnpm) pnpm_version="$2" ;;
         --rust) rust_version="$2" ;;
@@ -64,9 +67,10 @@ semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 digest='^sha256:[0-9a-f]{64}$'
 if [[ -n "$node_version" ]]; then
   [[ "$node_version" =~ $semver ]] || fail 'Node.js must be exact stable SemVer'
-  [[ "${node_version%%.*}" == 24 ]] || fail 'Node.js must remain on the supported 24.x major'
   [[ "$node_digest" =~ $digest ]] || fail 'Node.js digest must be a lowercase SHA-256 digest'
 fi
+[[ -z "$node_types" || -n "$node_version" ]] || fail '--node-types requires --node'
+[[ -z "$node_types" || "$node_types" =~ $semver ]] || fail 'Node.js types must be exact stable SemVer'
 [[ -z "$pnpm_version" || "$pnpm_version" =~ $semver ]] || fail 'pnpm must be exact stable SemVer'
 if [[ -n "$rust_version" ]]; then
   [[ "$rust_version" =~ $semver ]] || fail 'Rust must be exact stable SemVer'
@@ -85,6 +89,11 @@ repository_root="$(git rev-parse --show-toplevel 2>/dev/null)" || fail 'run this
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 [[ "$PWD" == "$repository_root" ]] || fail 'script location and Git worktree root do not match'
 
+if [[ -n "$node_version" ]]; then
+  node_types="${node_types:-$(jq -r '.devDependencies["@types/node"]' admin-ui/package.json)}"
+  [[ "${node_version%%.*}" == "${node_types%%.*}" ]] || fail 'supply matching --node-types for a Node.js major change'
+fi
+
 targets=()
 add_target() {
   local candidate="$1" existing
@@ -96,6 +105,7 @@ add_target() {
 if [[ -n "$node_version" ]]; then
   add_target .node-version
   add_target Dockerfile
+  add_target admin-ui/package.json
 fi
 [[ -z "$pnpm_version" ]] || add_target admin-ui/package.json
 if [[ -n "$rust_version" ]]; then
@@ -149,9 +159,16 @@ if [[ -n "$node_version" ]]; then
     '^FROM node:[^@[:space:]]+@sha256:[0-9a-f]{64} AS admin-ui-builder$' \
     "FROM node:$node_version-bookworm-slim@$node_digest AS admin-ui-builder"
 fi
-if [[ -n "$pnpm_version" ]]; then
+if [[ -n "$pnpm_version$node_version" ]]; then
   rendered="$(mktemp "$backup_dir/package.XXXXXX")"
-  jq --arg version "pnpm@$pnpm_version" '.packageManager = $version' admin-ui/package.json > "$rendered"
+  jq --arg pnpm "$pnpm_version" --arg node "$node_version" --arg types "$node_types" '
+    if $pnpm != "" then .packageManager = "pnpm@\($pnpm)" else . end
+    | if $node != "" then
+        ($node | split(".")[0] | tonumber) as $major
+        | .engines.node = ">=\($major) <\($major + 1)"
+        | .devDependencies["@types/node"] = $types
+      else . end
+  ' admin-ui/package.json > "$rendered"
   cp "$rendered" admin-ui/package.json
 fi
 if [[ -n "$rust_version" ]]; then

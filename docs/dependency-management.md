@@ -8,7 +8,7 @@ This policy keeps server, administration UI, database-test, and container builds
 | --- | --- | --- |
 | Rust toolchain | `rust-toolchain.toml` | Exact stable patch, including required components |
 | Rust minimum version | Root `Cargo.toml` `rust-version` | Must match the toolchain major and minor |
-| Node.js | `.node-version` | Exact 24.x LTS patch; the Docker builder uses the same value |
+| Node.js | `.node-version` | Exact reviewed LTS patch; the Docker builder uses the same value |
 | Supported Node.js range | `admin-ui/package.json` `engines.node` | Current supported major only |
 | pnpm | `admin-ui/package.json` `packageManager` | Exact patch; CI and Corepack read this field |
 | JavaScript direct dependencies | `admin-ui/package.json` | Exact versions, with the lockfile fixing the full graph |
@@ -42,6 +42,13 @@ bash scripts/update-toolchains.sh \
 
 The command rejects dirty target files, prepares every related edit, runs the version policy, and restores the original files if validation fails. Resolve each digest from the named upstream registry tag, review its manifest and release notes, and run the complete quality, PostgreSQL, administration UI, browser and container gates before merging. CI denies yanked Cargo packages in addition to audited vulnerabilities.
 
+A Node.js major change also requires `--node-types <exact-version>` for that major.
+The updater changes the runtime, `engines.node`, type declarations and builder
+image in one rollback boundary. CI derives the major from `.node-version` rather
+than keeping another fixed-major rule. Refresh the pnpm lockfile with the selected
+runtime before frozen installation and the full matrix. Prefer a supported LTS
+runtime; do not expose newer runtime APIs by independently upgrading `@types/node`.
+
 The evidence scanner tracks the latest patch of ClamAV 1.4 LTS until its August 2027
 support boundary or a reviewed successor LTS migration. Compose uses the matching
 `_base` image with a persistent signature volume; the disposable runtime gate uses
@@ -53,6 +60,7 @@ requires their exact patch versions to remain aligned.
 
 | Exception | Reason | Owner | Review by | Removal condition |
 | --- | --- | --- | --- | --- |
+| Node.js 24 and matching types while Node.js 26 is Current | The build uses the maintained LTS line; Node.js 26 has not entered LTS in the official release schedule. Newer Node declarations would admit APIs absent from the selected runtime. | Admin UI maintainers | 2026-11-24 | Once the next LTS is available, update runtime, matching types, engines, lockfile and immutable builder image together; require the complete candidate-image and native gates. |
 | Checkout-relative workflow references | The released actionlint 1.7.12 rejects GitHub's self-repository syntax. Line-scoped zizmor annotations retain same-commit references without disabling other workflow checks. | Release maintainers | 2026-11-23 | Adopt self-repository references when a released actionlint validates them. |
 | TypeScript 6.0.3 while TypeScript 7 is current | `svelte-check` 4.7.7 declares support for TypeScript 5 and 6 only. Moving the authoritative Svelte/TypeScript gate to an unsupported compiler major would make a green check non-contractual. | Admin UI maintainers | 2026-11-23 | Upgrade when a supported current `svelte-check` release declares TypeScript 7 compatibility, then run Svelte check, browser E2E, and the production container gates. |
 | ClamAV 1.4 LTS while 1.5 is current | The reviewed 1.4.6 patch fixes the upstream parser advisories. Upstream supports 1.4 with critical patches through 2027-08-15 and requires the latest 1.4 patch for signature access. The LTS line limits scanner feature churn while retaining current critical fixes. | Service maintainers | 2026-11-23 | Move to the next reviewed LTS, or earlier if upstream support, signature access, or a security advisory requires it; validate evidence scanning and the complete container gate. |
