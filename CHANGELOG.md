@@ -3,6 +3,15 @@
 All notable changes to the Camellia Nexus Management Server will be recorded
 here from the first commercial release onward.
 
+## [1.1.2] - 2026-10-24
+
+### Build
+
+- refresh toolchains, administration UI and CI inputs (#49)
+
+- update Argon2 and keep Node toolchains coherent (#52)
+
+
 ## [1.1.1] - 2026-08-18
 
 ### Build
